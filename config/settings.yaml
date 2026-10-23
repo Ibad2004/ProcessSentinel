@@ -1,0 +1,17 @@
+app:
+  name: "PC Security Assistant"
+  environment: "development"
+
+logging:
+  level: "INFO"
+  file: "logs/app.log"
+
+security:
+  read_only: true
+  allow_process_termination: false
+
+ai:
+  provider: "ollama"
+  enabled: false
+  base_url: "http://localhost:11434"
+  model: "qwen3:8b"
