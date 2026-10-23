@@ -4,7 +4,7 @@ import pytest
 from pc_security.ai.explanation_service import AIExplanationService
 
 
-class FakeOllamaClient:
+class FakeAIClient:
     def __init__(self, response="This process needs further review."):
         self.response = response
         self.prompt = None
@@ -36,7 +36,7 @@ def sample_analysis():
 
 
 def test_explain_process_returns_pid_and_explanation():
-    client = FakeOllamaClient("The executable location should be verified.")
+    client = FakeAIClient("The executable location should be verified.")
     service = AIExplanationService(client=client)
 
     result = service.explain_process(sample_analysis())
@@ -48,7 +48,7 @@ def test_explain_process_returns_pid_and_explanation():
 
 
 def test_explain_process_sends_evidence_to_client():
-    client = FakeOllamaClient()
+    client = FakeAIClient()
     service = AIExplanationService(client=client)
 
     service.explain_process(sample_analysis())
@@ -60,7 +60,7 @@ def test_explain_process_sends_evidence_to_client():
 
 
 def test_explain_process_does_not_send_unrelated_fields():
-    client = FakeOllamaClient()
+    client = FakeAIClient()
     service = AIExplanationService(client=client)
 
     analysis = sample_analysis()
@@ -72,14 +72,14 @@ def test_explain_process_does_not_send_unrelated_fields():
 
 
 def test_explain_process_rejects_invalid_input():
-    service = AIExplanationService(client=FakeOllamaClient())
+    service = AIExplanationService(client=FakeAIClient())
 
     with pytest.raises(ValueError, match="dictionary"):
         service.explain_process("not an analysis")
 
 
 def test_explain_process_rejects_invalid_findings():
-    service = AIExplanationService(client=FakeOllamaClient())
+    service = AIExplanationService(client=FakeAIClient())
 
     analysis = sample_analysis()
     analysis["findings"] = "invalid"

@@ -1,5 +1,6 @@
+
 app:
-  name: "PC Security Assistant"
+  name: "ProcessSentinel"
   environment: "development"
 
 logging:
@@ -11,7 +12,8 @@ security:
   allow_process_termination: false
 
 ai:
-  provider: "ollama"
-  enabled: false
-  base_url: "http://localhost:11434"
-  model: "qwen3:8b"
+  provider: "groq"
+  enabled: true
+  model: "openai/gpt-oss-20b"
+  timeout: 30
+  max_tokens: 250

@@ -1,0 +1,60 @@
+('D:\\7th '
+ 'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\ProcessSentinel.pkg',
+ {'BINARY': True,
+  'DATA': True,
+  'EXECUTABLE': True,
+  'EXTENSION': True,
+  'PYMODULE': True,
+  'PYSOURCE': True,
+  'PYZ': False,
+  'SPLASH': True,
+  'SYMLINK': False},
+ [('pyi-contents-directory _internal', '', 'OPTION'),
+  ('PYZ-00.pyz',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\PYZ-00.pyz',
+   'PYZ'),
+  ('struct',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\localpycs\\struct.pyc',
+   'PYMODULE'),
+  ('pyimod01_archive',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\localpycs\\pyimod01_archive.pyc',
+   'PYMODULE'),
+  ('pyimod02_importers',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\localpycs\\pyimod02_importers.pyc',
+   'PYMODULE'),
+  ('pyimod03_ctypes',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\localpycs\\pyimod03_ctypes.pyc',
+   'PYMODULE'),
+  ('pyimod04_pywin32',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\build\\ProcessSentinel\\localpycs\\pyimod04_pywin32.pyc',
+   'PYMODULE'),
+  ('pyiboot01_bootstrap',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\.venv\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
+   'PYSOURCE'),
+  ('pyi_rth_inspect',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
+   'PYSOURCE'),
+  ('pyi_rth_pyside6',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\.venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pyside6.py',
+   'PYSOURCE'),
+  ('main',
+   'D:\\7th '
+   'semester\\PC-Security-Assistant\\PC-Security-Assistant\\src\\pc_security\\main.py',
+   'PYSOURCE')],
+ 'python313.dll',
+ True,
+ False,
+ False,
+ [],
+ None,
+ None,
+ None)

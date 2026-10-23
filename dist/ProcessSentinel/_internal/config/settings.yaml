@@ -1,0 +1,19 @@
+
+app:
+  name: "ProcessSentinel"
+  environment: "development"
+
+logging:
+  level: "INFO"
+  file: "logs/app.log"
+
+security:
+  read_only: true
+  allow_process_termination: false
+
+ai:
+  provider: "groq"
+  enabled: true
+  model: "openai/gpt-oss-20b"
+  timeout: 30
+  max_tokens: 250

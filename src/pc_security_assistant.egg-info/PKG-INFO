@@ -1,0 +1,35 @@
+Metadata-Version: 2.4
+Name: pc-security-assistant
+Version: 0.1.0
+Summary: A modular, read-only Windows process inspection assistant
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: PyYAML<7.0,>=6.0
+Requires-Dist: psutil<8.0,>=7.2
+Requires-Dist: PySide6<7.0,>=6.8
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.0; extra == "dev"
+
+# PC Security Assistant
+
+A modular, read-only Windows process inspection and AI-assisted security analysis application.
+
+## Current stage
+
+This ZIP contains the initial project scaffold only. The process scanner, security analyzer,
+Ollama integration, and desktop UI will be implemented and tested in later steps.
+
+## Planned architecture
+
+- `core/`: configuration and logging
+- `scanner/`: read-only system inspection
+- `security/`: evidence-based security checks
+- `ai/`: local Ollama integration
+- `ui/`: desktop interface
+- `tests/`: automated tests
+- `config/`: application settings
+
+## Safety
+
+The initial version is designed to be read-only. It will not terminate processes, delete files,
+or change Windows settings.
