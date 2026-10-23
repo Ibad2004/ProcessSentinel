@@ -5,5 +5,8 @@ PyYAML>=6.0,<7.0
 # Windows process inspection
 psutil>=7.2,<8.0
 
+# Desktop user interface
+PySide6>=6.8,<7.0
+
 # Testing
 pytest>=8.0,<9.0
