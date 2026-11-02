@@ -231,7 +231,8 @@ def analyze_process(process):
     Missing metadata alone does not increase the risk score.
 
     Optional process fields used by the rules (missing fields skip a rule):
-    parent_name, cmdline, username, signature_status, signer.
+    parent_name, cmdline, username, signature_status, signer,
+    outbound_connection_count.
     A signature_status of "unknown" (or missing) never adds points.
     """
     findings = []
@@ -245,6 +246,12 @@ def analyze_process(process):
     signature_status = process.get("signature_status")
     signer = process.get("signer")
     is_unsigned = signature_status == "unsigned"
+    outbound_count = process.get("outbound_connection_count")
+    has_outbound = (
+        isinstance(outbound_count, int)
+        and not isinstance(outbound_count, bool)
+        and outbound_count > 0
+    )
 
     # Missing information is a limitation, not proof of malicious activity.
     if not normalized_name:
@@ -566,6 +573,45 @@ def analyze_process(process):
             5,
         )
 
+    # Rule 13: Command and script tools talking to the internet. Admin and
+    # update scripts do this too, so the weight is low.
+    script_host_network_scored = False
+    if has_outbound and (
+        normalized_name in SCRIPT_HOST_PROCESSES | POWERSHELL_PROCESSES
+    ):
+        script_host_network_scored = True
+        _add_finding(
+            findings,
+            "SCRIPT_HOST_WITH_NETWORK_ACTIVITY",
+            "info",
+            "Script or command tool has internet connections",
+            (
+                f"{name} is a Windows tool for running commands or scripts, "
+                f"and it has {outbound_count} active outbound connection(s). "
+                "Attackers use these tools to download or send data. IT and "
+                "update scripts can also connect to the internet."
+            ),
+            15,
+        )
+
+    # Rule 14: An unsigned program talking to the internet. Only "unsigned"
+    # counts; an "unknown" signature status never adds points. Skipped when
+    # rule 13 already scored the same connections.
+    if has_outbound and is_unsigned and not script_host_network_scored:
+        _add_finding(
+            findings,
+            "UNSIGNED_WITH_NETWORK_ACTIVITY",
+            "info",
+            "Unsigned program has internet connections",
+            (
+                f"This unsigned program has {outbound_count} active outbound "
+                "connection(s). Without a signature its publisher cannot be "
+                "confirmed, so check where it came from and what it connects "
+                "to. Many small legitimate tools are unsigned and online."
+            ),
+            10,
+        )
+
     # Cap the score so its range remains predictable as rules are added.
     score = min(sum(finding["points"] for finding in findings), 100)
 
@@ -603,6 +649,9 @@ def analyze_process(process):
         "signature_status": signature_status,
         "signer": signer,
         "sha256": process.get("sha256"),
+        "outbound_connection_count": outbound_count if has_outbound else 0,
+        "remote_endpoints": list(process.get("remote_endpoints") or []),
+        "listening_ports": list(process.get("listening_ports") or []),
         "metadata_notes": list(process.get("metadata_notes") or []),
     }
 

@@ -114,3 +114,21 @@ def test_signature_evidence_is_sent_to_ai():
     assert '"signer": null' in client.prompt
     assert "ab" * 32 in client.prompt
     assert "does not mean unsigned" in client.system_prompt
+
+
+def test_network_summary_is_sent_but_not_endpoints():
+    client = FakeAIClient()
+    service = AIExplanationService(client=client)
+
+    analysis = sample_analysis()
+    analysis["outbound_connection_count"] = 3
+    analysis["listening_ports"] = [8080, 443]
+    analysis["remote_endpoints"] = ["203.0.113.9:4444"]
+
+    service.explain_process(analysis)
+
+    assert '"outbound_connection_count": 3' in client.prompt
+    assert "8080" in client.prompt
+    assert "203.0.113.9" not in client.prompt
+    assert "SCRIPT_HOST_WITH_NETWORK_ACTIVITY" in client.system_prompt
+    assert "UNSIGNED_WITH_NETWORK_ACTIVITY" in client.system_prompt

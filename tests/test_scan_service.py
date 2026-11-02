@@ -2,6 +2,20 @@
 import pytest
 
 from pc_security.core.scan_service import ProcessScanService
+from pc_security.scanner import file_inspector, network_scanner
+
+
+@pytest.fixture(autouse=True)
+def no_real_system_access(monkeypatch):
+    """Tests using the default pipeline must never touch the real system."""
+    monkeypatch.setattr(
+        network_scanner.psutil, "net_connections", lambda kind="inet": []
+    )
+
+    def no_powershell(*args, **kwargs):
+        raise AssertionError("tests must not start PowerShell")
+
+    monkeypatch.setattr(file_inspector, "_run_powershell", no_powershell)
 
 
 def sample_process(pid, name):
@@ -236,3 +250,75 @@ def test_default_pipeline_uses_inspect_processes():
     from pc_security.scanner.file_inspector import inspect_processes
 
     assert ProcessScanService().file_inspector is inspect_processes
+
+
+def established(pid, remote_ip, remote_port=443):
+    return {
+        "pid": pid, "protocol": "TCP",
+        "local_address": "10.0.0.2", "local_port": 50000,
+        "remote_address": remote_ip, "remote_port": remote_port,
+        "status": "ESTABLISHED",
+    }
+
+
+def test_network_step_runs_after_scan_and_feeds_analyzer():
+    events = []
+    processes = [sample_process(101, "example.exe")]
+
+    def fake_scanner():
+        events.append("scan")
+        return processes
+
+    def fake_network():
+        events.append("network")
+        return {
+            "connections": [established(101, "1.1.1.1")],
+            "notes": ["run as administrator to see more"],
+        }
+
+    def fake_analyzer(items):
+        events.append("analyze")
+        assert items[0]["outbound_connection_count"] == 1
+        assert items[0]["remote_endpoints"] == ["1.1.1.1:443"]
+        return [sample_analysis(items[0])]
+
+    messages = []
+    service = ProcessScanService(
+        scanner=fake_scanner,
+        analyzer=fake_analyzer,
+        file_inspector=lambda items: events.append("inspect"),
+        network_scanner=fake_network,
+    )
+
+    result = service.run_scan(progress_callback=messages.append)
+
+    assert events == ["scan", "network", "inspect", "analyze"]
+    assert "Checking network connections..." in messages
+    assert result["network_error"] is None
+    assert result["network_notes"] == ["run as administrator to see more"]
+    assert result["network_connections"][0]["process_name"] == "example.exe"
+
+
+def test_network_failure_does_not_stop_scan():
+    def failing_network():
+        raise RuntimeError("network listing denied")
+
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "example.exe")],
+        analyzer=lambda items: [sample_analysis(items[0])],
+        file_inspector=lambda items: None,
+        network_scanner=failing_network,
+    )
+
+    result = service.run_scan()
+
+    assert result["scanned_count"] == 1
+    assert "denied" in result["network_error"]
+    assert result["network_connections"] == []
+    assert result["network_notes"] == []
+
+
+def test_default_pipeline_uses_network_scanner():
+    from pc_security.scanner.network_scanner import collect_connections
+
+    assert ProcessScanService().network_scanner is collect_connections

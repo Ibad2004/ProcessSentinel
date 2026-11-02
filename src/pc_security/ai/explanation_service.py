@@ -61,6 +61,14 @@ Additional rules:
   signature confirms the publisher, not that the program is harmless.
 - A sha256 value identifies the exact file. You may suggest looking it up on
   a reputation service, but never claim to know its reputation.
+- outbound_connection_count is the number of established connections to
+  remote addresses at scan time; listening_ports are local ports waiting
+  for incoming connections. Remote addresses are not supplied. Many normal
+  programs connect to the internet.
+- Rule SCRIPT_HOST_WITH_NETWORK_ACTIVITY means a command or script tool
+  (such as PowerShell or cmd) had outbound connections.
+- Rule UNSIGNED_WITH_NETWORK_ACTIVITY means a program without a digital
+  signature had outbound connections.
 - If evidence is insufficient, state that explicitly.
 """
 
@@ -90,6 +98,10 @@ class AIExplanationService:
             "signature_status": analysis.get("signature_status"),
             "signer": analysis.get("signer"),
             "sha256": analysis.get("sha256"),
+            "outbound_connection_count": analysis.get(
+                "outbound_connection_count"
+            ),
+            "listening_ports": analysis.get("listening_ports"),
             "findings": [],
         }
 

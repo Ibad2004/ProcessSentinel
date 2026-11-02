@@ -2,6 +2,10 @@
 """Orchestrate read-only process scanning, analysis, and AI explanations."""
 
 from pc_security.scanner.file_inspector import inspect_processes
+from pc_security.scanner.network_scanner import (
+    attach_network_info,
+    collect_connections,
+)
 from pc_security.scanner.process_scanner import scan_processes
 from pc_security.security.analyzer import analyze_processes
 
@@ -17,6 +21,7 @@ class ProcessScanService:
         max_ai_explanations=10,
         explanation_service_factory=None,
         file_inspector=None,
+        network_scanner=None,
     ):
         if (
             isinstance(max_ai_explanations, bool)
@@ -28,6 +33,7 @@ class ProcessScanService:
         self.scanner = scanner or scan_processes
         self.analyzer = analyzer or analyze_processes
         self.file_inspector = file_inspector or inspect_processes
+        self.network_scanner = network_scanner or collect_connections
         self.explanation_service = explanation_service
         self.explanation_service_factory = explanation_service_factory
         self.max_ai_explanations = max_ai_explanations
@@ -120,6 +126,17 @@ class ProcessScanService:
         report("Collecting running processes...")
         processes = self.scanner()
 
+        report("Checking network connections...")
+        network = {"connections": [], "notes": []}
+        network_error = None
+        try:
+            network = self.network_scanner()
+            attach_network_info(processes, network["connections"])
+        except Exception as exc:
+            # Same pattern as signatures: network data is extra evidence.
+            network = {"connections": [], "notes": []}
+            network_error = str(exc)
+
         report("Checking digital signatures...")
         file_inspection_error = None
         try:
@@ -143,6 +160,9 @@ class ProcessScanService:
             "ai_candidate_pids": [],
             "ai_selection_mode": "not_requested",
             "file_inspection_error": file_inspection_error,
+            "network_connections": network.get("connections", []),
+            "network_notes": network.get("notes", []),
+            "network_error": network_error,
         }
 
         if not include_ai:

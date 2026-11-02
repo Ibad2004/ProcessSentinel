@@ -1,55 +1,16 @@
 
-import os
-
-from pc_security.scanner.process_scanner import scan_processes
-
-
-def test_scan_processes_returns_a_list():
-    processes = scan_processes()
-
-    assert isinstance(processes, list)
-
-
-def test_scan_processes_includes_current_python_process():
-    processes = scan_processes()
-    current_pid = os.getpid()
-
-    matching_processes = [
-        process for process in processes
-        if process["pid"] == current_pid
-    ]
-
-    assert len(matching_processes) == 1
-
-
-def test_process_records_have_expected_fields():
-    processes = scan_processes()
-
-    if not processes:
-        return
-
-    expected_fields = {
-        "pid",
-        "name",
-        "exe_path",
-        "cpu_percent",
-        "memory_mb",
-        "parent_pid",
-    }
-
-    assert expected_fields.issubset(processes[0].keys())
-
-
 # ---------------------------------------------------------------------------
 # Mocked psutil tests: deterministic and independent of the host machine.
 # ---------------------------------------------------------------------------
 
+import os
 from types import SimpleNamespace
 
 import psutil
 import pytest
 
 import pc_security.scanner.process_scanner as scanner_module
+from pc_security.scanner.process_scanner import scan_processes
 
 
 class FakeProcess:
@@ -190,3 +151,46 @@ def test_missing_parent_is_noted(fake_processes):
     assert any(
         "no longer running" in note for note in child["metadata_notes"]
     )
+
+
+# Converted from the original tests that scanned real processes.
+
+def test_scan_processes_returns_a_list(fake_processes):
+    fake_processes.append(FakeProcess(fake_info(1, "a.exe", 0, 1.0)))
+
+    processes = scan_processes()
+
+    assert isinstance(processes, list)
+
+
+def test_scan_processes_includes_current_python_process(fake_processes):
+    current_pid = os.getpid()
+    fake_processes.extend([
+        FakeProcess(fake_info(current_pid, "python.exe", 1, 2.0)),
+        FakeProcess(fake_info(current_pid + 1, "other.exe", 1, 3.0)),
+    ])
+
+    processes = scan_processes()
+    matching_processes = [
+        process for process in processes
+        if process["pid"] == current_pid
+    ]
+
+    assert len(matching_processes) == 1
+
+
+def test_process_records_have_expected_fields(fake_processes):
+    fake_processes.append(FakeProcess(fake_info(1, "a.exe", 0, 1.0)))
+
+    processes = scan_processes()
+
+    expected_fields = {
+        "pid",
+        "name",
+        "exe_path",
+        "cpu_percent",
+        "memory_mb",
+        "parent_pid",
+    }
+
+    assert expected_fields.issubset(processes[0].keys())

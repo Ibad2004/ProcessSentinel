@@ -6,9 +6,10 @@ import re
 from typing import Any, Callable
 
 from PySide6.QtCore import QThread, QUrl, Signal, Slot, Qt
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QBrush, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -36,6 +37,11 @@ SIGNATURE_LABELS = {
 }
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+MAX_DETAIL_ENDPOINTS = 10
+
+# Translucent amber reads well on both the dark and light themes.
+FLAGGED_ROW_BRUSH = QBrush(QColor(251, 191, 36, 60))
 
 
 def signature_label(status) -> str:
@@ -93,6 +99,7 @@ class MainWindow(QMainWindow):
         ai_timeout: int = 30,
         ai_max_tokens: int = 2000,
         explanation_service_factory=None,
+        startup_scanner=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -103,6 +110,7 @@ class MainWindow(QMainWindow):
         self.ai_timeout = ai_timeout
         self.ai_max_tokens = ai_max_tokens
         self.explanation_service_factory = explanation_service_factory
+        self.startup_scanner = startup_scanner
 
         self.worker = None
         self.current_theme = "dark"
@@ -112,6 +120,8 @@ class MainWindow(QMainWindow):
         self.ai_errors: dict[int, str] = {}
         self.ai_candidate_pids: list[int] = []
         self.ai_selection_mode = "not_requested"
+        self.network_connections: list[dict[str, Any]] = []
+        self.startup_entries: list[dict[str, Any]] = []
 
         self.setWindowTitle("ProcessSentinel")
         self.resize(1500, 900)
@@ -529,6 +539,186 @@ class MainWindow(QMainWindow):
         lab_splitter.setSizes([360, 1000])
         lab_layout.addWidget(lab_splitter, 1)
 
+        self._build_network_tab()
+        self._build_startup_tab()
+
+    @staticmethod
+    def _make_table(object_name, headers, stretch_column):
+        table = QTableWidget(0, len(headers))
+        table.setObjectName(object_name)
+        table.setHorizontalHeaderLabels(headers)
+        table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setShowGrid(False)
+        table.setAlternatingRowColors(True)
+        table.setSortingEnabled(True)
+        table.verticalHeader().setVisible(False)
+
+        header = table.horizontalHeader()
+        for column in range(len(headers)):
+            header.setSectionResizeMode(
+                column,
+                QHeaderView.ResizeMode.Stretch
+                if column == stretch_column
+                else QHeaderView.ResizeMode.ResizeToContents,
+            )
+        return table
+
+    @staticmethod
+    def _page_header(layout, title_text, subtitle_text):
+        title = QLabel(title_text)
+        title.setObjectName("sectionTitle")
+        subtitle = QLabel(subtitle_text)
+        subtitle.setObjectName("muted")
+        subtitle.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+    def _build_network_tab(self) -> None:
+        # ============================================================
+        # WORKSPACE 3: NETWORK CONNECTIONS
+        # ============================================================
+        self.network_page = QWidget()
+        self.network_page.setObjectName("networkPage")
+        self.workspace_tabs.addTab(self.network_page, "Network")
+
+        layout = QVBoxLayout(self.network_page)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        self._page_header(
+            layout,
+            "Network connections",
+            "Connections open at the time of the last process scan. "
+            "Click a row to open that process in Security overview. "
+            "ProcessSentinel only lists connections; it never blocks them.",
+        )
+
+        controls = QHBoxLayout()
+        self.network_search_input = QLineEdit()
+        self.network_search_input.setObjectName("searchInput")
+        self.network_search_input.setPlaceholderText(
+            "Search process, PID, address, port or state..."
+        )
+        self.network_search_input.setClearButtonEnabled(True)
+        self.network_search_input.setFixedWidth(340)
+        self.network_search_input.textChanged.connect(self._filter_network)
+        controls.addWidget(self.network_search_input)
+
+        self.established_only_checkbox = QCheckBox("Show only established")
+        self.established_only_checkbox.toggled.connect(self._filter_network)
+        controls.addWidget(self.established_only_checkbox)
+        controls.addStretch()
+
+        self.network_count_label = QLabel("0 connections")
+        self.network_count_label.setObjectName("muted")
+        controls.addWidget(self.network_count_label)
+        layout.addLayout(controls)
+
+        self.network_notes_label = QLabel("Run a process scan to list connections.")
+        self.network_notes_label.setObjectName("muted")
+        self.network_notes_label.setWordWrap(True)
+        layout.addWidget(self.network_notes_label)
+
+        self.network_table = self._make_table(
+            "networkTable",
+            [
+                "PROCESS", "PID", "PROTOCOL", "LOCAL ADDRESS",
+                "REMOTE ADDRESS", "REMOTE PORT", "STATE",
+            ],
+            stretch_column=4,
+        )
+        self.network_table.cellClicked.connect(
+            self._select_process_from_network
+        )
+        layout.addWidget(self.network_table, 1)
+
+    def _build_startup_tab(self) -> None:
+        # ============================================================
+        # WORKSPACE 4: STARTUP / PERSISTENCE
+        # ============================================================
+        self.startup_page = QWidget()
+        self.startup_page.setObjectName("startupPage")
+        self.workspace_tabs.addTab(self.startup_page, "Startup")
+
+        layout = QVBoxLayout(self.startup_page)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        self._page_header(
+            layout,
+            "Startup items",
+            "Programs Windows starts automatically: registry Run keys, "
+            "Startup folders and scheduled tasks. This list is read-only; "
+            "nothing is disabled or removed.",
+        )
+
+        controls = QHBoxLayout()
+        self.startup_scan_button = QPushButton("↻  Scan startup items")
+        self.startup_scan_button.setObjectName("primaryButton")
+        self.startup_scan_button.clicked.connect(self._start_startup_scan)
+        controls.addWidget(self.startup_scan_button)
+
+        self.include_builtin_tasks_checkbox = QCheckBox(
+            "Include built-in Windows tasks"
+        )
+        self.include_builtin_tasks_checkbox.setToolTip(
+            "Also list tasks under \\Microsoft\\Windows\\. There are "
+            "usually hundreds of these."
+        )
+        controls.addWidget(self.include_builtin_tasks_checkbox)
+        controls.addStretch()
+
+        self.startup_search_input = QLineEdit()
+        self.startup_search_input.setObjectName("searchInput")
+        self.startup_search_input.setPlaceholderText(
+            "Search name, command, path or flag..."
+        )
+        self.startup_search_input.setClearButtonEnabled(True)
+        self.startup_search_input.setFixedWidth(310)
+        self.startup_search_input.textChanged.connect(self._filter_startup)
+        controls.addWidget(self.startup_search_input)
+        layout.addLayout(controls)
+
+        self.startup_notes_label = QLabel(
+            "Click Scan startup items to list autostart entries."
+        )
+        self.startup_notes_label.setObjectName("muted")
+        self.startup_notes_label.setWordWrap(True)
+        layout.addWidget(self.startup_notes_label)
+
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        splitter.setChildrenCollapsible(False)
+
+        self.startup_table = self._make_table(
+            "startupTable",
+            [
+                "SOURCE", "NAME", "COMMAND", "EXECUTABLE PATH",
+                "SIGNATURE", "FLAGS",
+            ],
+            stretch_column=2,
+        )
+        self.startup_table.itemSelectionChanged.connect(
+            self._show_selected_startup_entry
+        )
+        splitter.addWidget(self.startup_table)
+
+        self.startup_details_text = QTextEdit()
+        self.startup_details_text.setObjectName("startupDetailsText")
+        self.startup_details_text.setReadOnly(True)
+        self.startup_details_text.setAcceptRichText(False)
+        self.startup_details_text.setPlaceholderText(
+            "Select a startup entry to see its full details."
+        )
+        splitter.addWidget(self.startup_details_text)
+        splitter.setSizes([520, 220])
+        layout.addWidget(splitter, 1)
+
     def _add_stat_card(
         self, parent_layout, label, value, symbol, accent
     ):
@@ -607,12 +797,14 @@ class MainWindow(QMainWindow):
             color: #E5EAF4; background: #111B2E; border: 1px solid #2B3A53;
             border-radius: 8px; padding: 10px 12px; selection-background-color: #2563EB;
         }
-        QTableWidget#processTable, QTableWidget#aiCandidateTable {
+        QTableWidget#processTable, QTableWidget#aiCandidateTable,
+        QTableWidget#networkTable, QTableWidget#startupTable {
             background: #111B2E; alternate-background-color: #131F33;
             color: #DCE5F2; border: none; selection-background-color: #1D3A65;
             selection-color: white; outline: none;
         }
-        QTableWidget#processTable::item, QTableWidget#aiCandidateTable::item {
+        QTableWidget#processTable::item, QTableWidget#aiCandidateTable::item,
+        QTableWidget#networkTable::item, QTableWidget#startupTable::item {
             padding: 7px; border-bottom: 1px solid #202D43;
         }
         QHeaderView::section {
@@ -620,7 +812,8 @@ class MainWindow(QMainWindow):
             border-bottom: 1px solid #2B3A53; padding: 10px 7px;
             font-size: 8pt; font-weight: 700;
         }
-        QTextEdit#detailsText, QTextEdit#aiAnalysisText, QTextEdit#aiLabText {
+        QTextEdit#detailsText, QTextEdit#aiAnalysisText, QTextEdit#aiLabText,
+        QTextEdit#startupDetailsText {
             background: #0D1728; color: #D6E0EF; border: 1px solid #253650;
             border-radius: 8px; padding: 14px; selection-background-color: #2563EB;
             font-family: "Segoe UI"; font-size: 11pt;
@@ -676,12 +869,14 @@ class MainWindow(QMainWindow):
             color: #243247; background: white; border: 1px solid #CBD5E1;
             border-radius: 8px; padding: 10px 12px; selection-background-color: #2563EB;
         }
-        QTableWidget#processTable, QTableWidget#aiCandidateTable {
+        QTableWidget#processTable, QTableWidget#aiCandidateTable,
+        QTableWidget#networkTable, QTableWidget#startupTable {
             background: white; alternate-background-color: #F6F8FC; color: #243247;
             border: none; selection-background-color: #C9DDFB; selection-color: #111827;
             outline: none;
         }
-        QTableWidget#processTable::item, QTableWidget#aiCandidateTable::item {
+        QTableWidget#processTable::item, QTableWidget#aiCandidateTable::item,
+        QTableWidget#networkTable::item, QTableWidget#startupTable::item {
             padding: 7px; border-bottom: 1px solid #E2E8F0;
         }
         QHeaderView::section {
@@ -689,7 +884,8 @@ class MainWindow(QMainWindow):
             border-bottom: 1px solid #CBD5E1; padding: 10px 7px;
             font-size: 8pt; font-weight: 700;
         }
-        QTextEdit#detailsText, QTextEdit#aiAnalysisText, QTextEdit#aiLabText {
+        QTextEdit#detailsText, QTextEdit#aiAnalysisText, QTextEdit#aiLabText,
+        QTextEdit#startupDetailsText {
             background: #F8FAFC; color: #243247; border: 1px solid #CBD5E1;
             border-radius: 8px; padding: 14px; selection-background-color: #2563EB;
             font-family: "Segoe UI"; font-size: 11pt;
@@ -725,6 +921,7 @@ class MainWindow(QMainWindow):
         self.scan_button.setEnabled(not busy)
         self.ai_scan_button.setEnabled(not busy)
         self.retry_button.setEnabled(not busy)
+        self.startup_scan_button.setEnabled(not busy)
 
         if busy:
             self.progress_bar.setRange(0, 0)
@@ -816,6 +1013,7 @@ class MainWindow(QMainWindow):
 
         self._populate_table()
         self._render_ai_analysis(result)
+        self._populate_network(result)
 
         scanned = result.get("scanned_count", len(self.analyses))
         flagged = sum(
@@ -1122,6 +1320,8 @@ class MainWindow(QMainWindow):
             f"Signer: {analysis.get('signer') or 'Unavailable'}",
             f"SHA-256: {analysis.get('sha256') or 'Unavailable'}",
             "",
+            *self._network_detail_lines(analysis),
+            "",
             "RULE FINDINGS",
             "=" * 32,
         ]
@@ -1163,6 +1363,321 @@ class MainWindow(QMainWindow):
         ])
 
         self.details_text.setPlainText("\n".join(lines))
+
+    @staticmethod
+    def _network_detail_lines(analysis: dict[str, Any]) -> list[str]:
+        lines = ["NETWORK", "=" * 32]
+        if "outbound_connection_count" not in analysis:
+            lines.append("Network information was not collected.")
+            return lines
+
+        ports = analysis.get("listening_ports") or []
+        endpoints = analysis.get("remote_endpoints") or []
+        lines.append(
+            "Outbound connections: "
+            f"{analysis.get('outbound_connection_count') or 0}"
+        )
+        lines.append(
+            "Listening ports: "
+            + (", ".join(str(port) for port in ports) or "None")
+        )
+        if endpoints:
+            lines.append("Remote endpoints:")
+            lines.extend(
+                f"  {endpoint}"
+                for endpoint in endpoints[:MAX_DETAIL_ENDPOINTS]
+            )
+            if len(endpoints) > MAX_DETAIL_ENDPOINTS:
+                lines.append(
+                    f"  ... and {len(endpoints) - MAX_DETAIL_ENDPOINTS} more"
+                )
+        else:
+            lines.append("Remote endpoints: None")
+        return lines
+
+    # ------------------------------------------------------------------
+    # Network tab
+    # ------------------------------------------------------------------
+
+    def _populate_network(self, result: dict[str, Any]) -> None:
+        self.network_connections = [
+            item for item in result.get("network_connections") or []
+            if isinstance(item, dict)
+        ]
+
+        notes = list(result.get("network_notes") or [])
+        if result.get("network_error"):
+            notes.insert(
+                0,
+                "Network connections could not be listed: "
+                f"{result['network_error']}",
+            )
+        self.network_notes_label.setText(
+            "\n".join(notes)
+            if notes
+            else "Connections open at the time of this scan."
+        )
+
+        table = self.network_table
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
+
+        for connection in self.network_connections:
+            row = table.rowCount()
+            table.insertRow(row)
+
+            local = connection.get("local_address")
+            local_port = connection.get("local_port")
+            if local and ":" in local:
+                local = f"[{local}]"
+            local_text = (
+                f"{local}:{local_port}" if local and local_port is not None
+                else local or "—"
+            )
+            remote_port = connection.get("remote_port")
+
+            values = [
+                QTableWidgetItem(
+                    str(connection.get("process_name") or "Unknown")
+                ),
+                NumericTableWidgetItem(str(connection.get("pid", ""))),
+                QTableWidgetItem(str(connection.get("protocol") or "?")),
+                QTableWidgetItem(local_text),
+                QTableWidgetItem(
+                    str(connection.get("remote_address") or "—")
+                ),
+                NumericTableWidgetItem(
+                    str(remote_port) if remote_port is not None else "—"
+                ),
+                QTableWidgetItem(str(connection.get("status") or "—")),
+            ]
+            for column, item in enumerate(values):
+                table.setItem(row, column, item)
+
+        table.setSortingEnabled(True)
+        self._filter_network()
+
+    def _filter_network(self, *_args) -> None:
+        """Re-filter; connected to both textChanged(str) and toggled(bool)."""
+        query = self.network_search_input.text().strip().casefold()
+        established_only = self.established_only_checkbox.isChecked()
+        table = self.network_table
+        visible = 0
+
+        for row in range(table.rowCount()):
+            cells = [
+                table.item(row, column).text()
+                if table.item(row, column) is not None
+                else ""
+                for column in range(table.columnCount())
+            ]
+            hidden = (
+                (query and query not in " ".join(cells).casefold())
+                or (established_only and cells[6] != "ESTABLISHED")
+            )
+            table.setRowHidden(row, bool(hidden))
+            if not hidden:
+                visible += 1
+
+        total = table.rowCount()
+        self.network_count_label.setText(
+            f"{visible} of {total} connections"
+            if visible != total
+            else f"{total} connections"
+        )
+
+    @Slot(int, int)
+    def _select_process_from_network(self, row: int, _column: int = 0) -> bool:
+        """Open the clicked connection's process in Security overview."""
+        pid_item = self.network_table.item(row, 1)
+        if pid_item is None:
+            return False
+
+        for table_row in range(self.process_table.rowCount()):
+            item = self.process_table.item(table_row, 0)
+            if item is None or item.text() != pid_item.text():
+                continue
+
+            if self.process_table.isRowHidden(table_row):
+                self.search_input.clear()
+
+            self.process_table.selectRow(table_row)
+            self._show_selected_process()
+            self.workspace_tabs.setCurrentWidget(self.dashboard_page)
+            return True
+
+        self.status_label.setText(
+            f"PID {pid_item.text()} is not in the process list; it may "
+            "have exited."
+        )
+        return False
+
+    # ------------------------------------------------------------------
+    # Startup tab
+    # ------------------------------------------------------------------
+
+    def _get_startup_scanner(self):
+        if self.startup_scanner is not None:
+            return self.startup_scanner
+
+        from pc_security.scanner.persistence import scan_startup_entries
+
+        return scan_startup_entries
+
+    def _start_startup_scan(self) -> None:
+        if self.worker is not None:
+            return
+
+        scanner = self._get_startup_scanner()
+        include_builtin = self.include_builtin_tasks_checkbox.isChecked()
+
+        self._set_busy(True)
+        self.status_label.setText("Scanning startup items...")
+        self.startup_notes_label.setText("Scanning startup items...")
+
+        def operation(report_progress):
+            return scanner(
+                include_builtin_tasks=include_builtin,
+                progress_callback=report_progress,
+            )
+
+        self.worker = TaskWorker(operation, self)
+        self.worker.progress.connect(self._update_startup_progress)
+        self.worker.succeeded.connect(self._startup_scan_succeeded)
+        self.worker.failed.connect(self._startup_scan_failed)
+        self.worker.finished.connect(self._worker_finished)
+        self.worker.start()
+
+    @Slot(str)
+    def _update_startup_progress(self, message: str) -> None:
+        self.status_label.setText(message)
+        self.startup_notes_label.setText(message)
+
+    @Slot(object)
+    def _startup_scan_succeeded(self, result: dict[str, Any]) -> None:
+        self.startup_entries = [
+            item for item in (result or {}).get("entries") or []
+            if isinstance(item, dict)
+        ]
+        notes = list((result or {}).get("notes") or [])
+        flagged = sum(1 for entry in self.startup_entries if entry.get("flags"))
+
+        summary = (
+            f"{len(self.startup_entries)} startup entries, "
+            f"{flagged} with flags. Flags are indicators to review, "
+            "not proof of malware."
+        )
+        self.startup_notes_label.setText("\n".join([summary, *notes]))
+        self.status_label.setText("Startup scan completed.")
+
+        table = self.startup_table
+        table.setSortingEnabled(False)
+        table.setRowCount(0)
+
+        for index, entry in enumerate(self.startup_entries):
+            row = table.rowCount()
+            table.insertRow(row)
+
+            flags = entry.get("flags") or []
+            values = [
+                QTableWidgetItem(str(entry.get("source") or "")),
+                QTableWidgetItem(str(entry.get("name") or "")),
+                QTableWidgetItem(str(entry.get("command") or "")),
+                QTableWidgetItem(
+                    str(entry.get("executable_path") or "Unknown")
+                ),
+                QTableWidgetItem(
+                    signature_label(entry.get("signature_status"))
+                ),
+                QTableWidgetItem(
+                    "; ".join(flag.get("title", "") for flag in flags)
+                ),
+            ]
+            # Keep the entry index so sorting cannot mix up details.
+            values[0].setData(Qt.ItemDataRole.UserRole, index)
+
+            for column, item in enumerate(values):
+                if flags:
+                    item.setBackground(FLAGGED_ROW_BRUSH)
+                table.setItem(row, column, item)
+
+        table.setSortingEnabled(True)
+        self._filter_startup(self.startup_search_input.text())
+        self.startup_details_text.clear()
+        if table.rowCount():
+            table.selectRow(0)
+
+    @Slot(str)
+    def _startup_scan_failed(self, message: str) -> None:
+        self.status_label.setText("Startup scan failed.")
+        self.startup_notes_label.setText(f"Startup scan failed: {message}")
+        QMessageBox.warning(self, "ProcessSentinel", message)
+
+    @Slot(str)
+    def _filter_startup(self, query: str) -> None:
+        query = query.strip().casefold()
+        table = self.startup_table
+        for row in range(table.rowCount()):
+            text = " ".join(
+                table.item(row, column).text()
+                if table.item(row, column) is not None
+                else ""
+                for column in range(table.columnCount())
+            ).casefold()
+            table.setRowHidden(row, bool(query) and query not in text)
+
+    def _selected_startup_entry(self) -> dict[str, Any] | None:
+        row = self.startup_table.currentRow()
+        if row < 0:
+            return None
+        item = self.startup_table.item(row, 0)
+        if item is None:
+            return None
+        index = item.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(index, int) or not (
+            0 <= index < len(self.startup_entries)
+        ):
+            return None
+        return self.startup_entries[index]
+
+    @Slot()
+    def _show_selected_startup_entry(self) -> None:
+        entry = self._selected_startup_entry()
+        if entry is None:
+            return
+
+        lines = [
+            f"Name: {entry.get('name') or 'Unknown'}",
+            f"Source: {entry.get('source') or 'Unknown'}",
+            f"Location: {entry.get('location') or 'Unknown'}",
+            f"Command: {entry.get('command') or 'None'}",
+            f"Executable path: {entry.get('executable_path') or 'Unknown'}",
+            "Digital signature: "
+            + signature_label(entry.get("signature_status")),
+            f"Signer: {entry.get('signer') or 'Unavailable'}",
+            "",
+            "FLAGS",
+            "=" * 32,
+        ]
+
+        flags = entry.get("flags") or []
+        for flag in flags:
+            lines.append(
+                f"[{flag.get('code')}] {flag.get('title')} "
+                f"(+{flag.get('points', 0)})"
+            )
+            lines.append(f"  {flag.get('explanation', '')}")
+        if not flags:
+            lines.append(
+                "No flags. This does not prove the entry is safe."
+            )
+
+        notes = entry.get("notes") or []
+        if notes:
+            lines.extend(["", "NOTES", "=" * 32])
+            lines.extend(f"- {note}" for note in notes)
+
+        self.startup_details_text.setPlainText("\n".join(lines))
 
     @Slot()
     def _open_virustotal(self) -> None:

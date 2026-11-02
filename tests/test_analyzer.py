@@ -485,3 +485,98 @@ def test_analysis_carries_signature_fields(windows_env):
     assert result["signature_status"] == "valid"
     assert result["signer"] == "Vendor Ltd"
     assert result["sha256"] == "ab" * 32
+
+
+# ---------------------------------------------------------------------------
+# Network rules
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "name",
+    ["powershell.exe", "pwsh.exe", "cmd.exe", "wscript.exe", "cscript.exe",
+     "mshta.exe", "rundll32.exe", "regsvr32.exe"],
+)
+def test_script_host_with_outbound_connections(windows_env, name):
+    result = analyze_process(make_process(
+        name=name, outbound_connection_count=2,
+    ))
+
+    assert codes(result) == {"SCRIPT_HOST_WITH_NETWORK_ACTIVITY"}
+    assert result["risk_score"] == 15
+    assert_finding_format(result)
+
+
+def test_script_host_without_connections_is_not_flagged(windows_env):
+    result = analyze_process(make_process(
+        name="powershell.exe", outbound_connection_count=0,
+    ))
+
+    assert result["risk_score"] == 0
+
+
+def test_unsigned_with_outbound_connections(windows_env):
+    result = analyze_process(make_process(
+        signature_status="unsigned", outbound_connection_count=3,
+    ))
+
+    assert codes(result) == {
+        "UNSIGNED_EXECUTABLE", "UNSIGNED_WITH_NETWORK_ACTIVITY",
+    }
+    assert result["risk_score"] == 15
+    assert_finding_format(result)
+
+
+@pytest.mark.parametrize("status", ["unknown", None, "valid", "invalid"])
+def test_network_rule_needs_unsigned_status(windows_env, status):
+    result = analyze_process(make_process(
+        signature_status=status, signer="Vendor Ltd",
+        outbound_connection_count=3,
+    ))
+
+    assert "UNSIGNED_WITH_NETWORK_ACTIVITY" not in codes(result)
+
+
+def test_unsigned_script_host_is_not_double_counted(windows_env):
+    result = analyze_process(make_process(
+        name="powershell.exe",
+        signature_status="unsigned",
+        outbound_connection_count=1,
+    ))
+
+    assert "SCRIPT_HOST_WITH_NETWORK_ACTIVITY" in codes(result)
+    assert "UNSIGNED_WITH_NETWORK_ACTIVITY" not in codes(result)
+
+
+@pytest.mark.parametrize("count", [True, "3", None, -1])
+def test_invalid_connection_counts_are_ignored(windows_env, count):
+    result = analyze_process(make_process(
+        name="cmd.exe", outbound_connection_count=count,
+    ))
+
+    assert result["risk_score"] == 0
+    assert result["outbound_connection_count"] == 0
+
+
+def test_network_rules_keep_score_capped(windows_env):
+    result = analyze_process(make_process(
+        name="powershell.exe",
+        exe_path=r"C:\Users\alice\AppData\Local\Temp\powershell.exe",
+        parent_name="winword.exe",
+        cmdline="powershell -w hidden -enc AAAA IEX DownloadString",
+        signature_status="unsigned",
+        outbound_connection_count=5,
+    ))
+
+    assert result["risk_score"] == 100
+
+
+def test_analysis_carries_network_fields(windows_env):
+    result = analyze_process(make_process(
+        outbound_connection_count=2,
+        remote_endpoints=["1.1.1.1:443"],
+        listening_ports=[8080],
+    ))
+
+    assert result["outbound_connection_count"] == 2
+    assert result["remote_endpoints"] == ["1.1.1.1:443"]
+    assert result["listening_ports"] == [8080]
