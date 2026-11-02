@@ -56,6 +56,11 @@ Additional rules:
 - Never recommend terminating processes, deleting files, or changing system
   settings as a response to a finding.
 - If no rules were triggered, explain what that means and what it does not mean.
+- signature_status is one of valid, unsigned, invalid or unknown. "unknown"
+  means the check could not be completed; it does not mean unsigned. A valid
+  signature confirms the publisher, not that the program is harmless.
+- A sha256 value identifies the exact file. You may suggest looking it up on
+  a reputation service, but never claim to know its reputation.
 - If evidence is insufficient, state that explicitly.
 """
 
@@ -82,6 +87,9 @@ class AIExplanationService:
             "exe_path": analysis.get("exe_path"),
             "risk_score": analysis.get("risk_score"),
             "risk_level": analysis.get("risk_level"),
+            "signature_status": analysis.get("signature_status"),
+            "signer": analysis.get("signer"),
+            "sha256": analysis.get("sha256"),
             "findings": [],
         }
 

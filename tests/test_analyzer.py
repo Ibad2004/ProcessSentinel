@@ -364,3 +364,124 @@ def test_analysis_carries_process_context(windows_env):
     assert result["cmdline"] == "example.exe"
     assert result["username"] == r"PC\alice"
     assert result["metadata_notes"] == ["note"]
+
+
+# ---------------------------------------------------------------------------
+# Signature rules
+# ---------------------------------------------------------------------------
+
+def test_unsigned_executable_alone_is_low_weight(windows_env):
+    result = analyze_process(make_process(signature_status="unsigned"))
+
+    assert codes(result) == {"UNSIGNED_EXECUTABLE"}
+    assert result["risk_score"] == 5
+    assert result["risk_level"] == "low"
+    assert_finding_format(result)
+
+
+def test_unsigned_in_user_writable_dir_replaces_weaker_rules(windows_env):
+    result = analyze_process(make_process(
+        exe_path=r"C:\Users\alice\AppData\Roaming\Tool\tool.exe",
+        signature_status="unsigned",
+    ))
+
+    # One combined finding: not EXECUTABLE_IN_USER_WRITABLE_DIR (10)
+    # plus UNSIGNED_EXECUTABLE (5) on top.
+    assert codes(result) == {"UNSIGNED_IN_USER_WRITABLE_DIR"}
+    assert result["risk_score"] == 30
+    assert result["risk_level"] == "medium"
+    assert_finding_format(result)
+
+
+def test_signed_program_in_user_writable_dir_keeps_low_weight(windows_env):
+    result = analyze_process(make_process(
+        exe_path=r"C:\Users\alice\AppData\Local\Programs\app.exe",
+        signature_status="valid",
+        signer="Vendor Ltd",
+    ))
+
+    assert codes(result) == {"EXECUTABLE_IN_USER_WRITABLE_DIR"}
+    assert result["risk_score"] == 10
+
+
+def test_unsigned_in_temp_keeps_temp_rule_plus_unsigned(windows_env):
+    result = analyze_process(make_process(
+        exe_path=r"C:\Users\alice\AppData\Local\Temp\setup.exe",
+        signature_status="unsigned",
+    ))
+
+    assert codes(result) == {"EXECUTABLE_IN_TEMP", "UNSIGNED_EXECUTABLE"}
+    assert result["risk_score"] == 30
+
+
+def test_invalid_signature_is_strong(windows_env):
+    result = analyze_process(make_process(
+        signature_status="invalid", signer="Vendor Ltd",
+    ))
+
+    assert codes(result) == {"INVALID_SIGNATURE"}
+    assert result["risk_score"] == 45
+    assert_finding_format(result)
+
+
+@pytest.mark.parametrize(
+    "status, signer",
+    [("unsigned", None), ("valid", "Totally Legit Software"),
+     ("invalid", "Unknown Corp")],
+)
+def test_system_process_not_signed_by_microsoft(windows_env, status, signer):
+    result = analyze_process(make_process(
+        name="svchost.exe",
+        exe_path=r"C:\Windows\System32\svchost.exe",
+        signature_status=status,
+        signer=signer,
+    ))
+
+    assert "SYSTEM_PROCESS_NOT_MICROSOFT_SIGNED" in codes(result)
+    # Never double-counted as a plain unsigned executable.
+    assert "UNSIGNED_EXECUTABLE" not in codes(result)
+    assert result["risk_score"] >= 50
+    assert_finding_format(result)
+
+
+@pytest.mark.parametrize(
+    "signer", ["Microsoft Windows", "Microsoft Windows Publisher",
+               "Microsoft Corporation"],
+)
+def test_microsoft_signed_system_process_is_clean(windows_env, signer):
+    result = analyze_process(make_process(
+        name="lsass.exe",
+        exe_path=r"C:\Windows\System32\lsass.exe",
+        signature_status="valid",
+        signer=signer,
+    ))
+
+    assert result["risk_score"] == 0
+
+
+@pytest.mark.parametrize("status", ["unknown", None])
+def test_unknown_signature_never_adds_points(windows_env, status):
+    plain = analyze_process(make_process(signature_status=status))
+    system = analyze_process(make_process(
+        name="lsass.exe",
+        exe_path=r"C:\Windows\System32\lsass.exe",
+        signature_status=status,
+    ))
+    writable = analyze_process(make_process(
+        exe_path=r"C:\ProgramData\Vendor\agent.exe",
+        signature_status=status,
+    ))
+
+    assert plain["risk_score"] == 0
+    assert system["risk_score"] == 0
+    assert writable["risk_score"] == 10  # only the location rule
+
+
+def test_analysis_carries_signature_fields(windows_env):
+    result = analyze_process(make_process(
+        signature_status="valid", signer="Vendor Ltd", sha256="ab" * 32,
+    ))
+
+    assert result["signature_status"] == "valid"
+    assert result["signer"] == "Vendor Ltd"
+    assert result["sha256"] == "ab" * 32

@@ -1,6 +1,7 @@
 
 """Orchestrate read-only process scanning, analysis, and AI explanations."""
 
+from pc_security.scanner.file_inspector import inspect_processes
 from pc_security.scanner.process_scanner import scan_processes
 from pc_security.security.analyzer import analyze_processes
 
@@ -15,6 +16,7 @@ class ProcessScanService:
         explanation_service=None,
         max_ai_explanations=10,
         explanation_service_factory=None,
+        file_inspector=None,
     ):
         if (
             isinstance(max_ai_explanations, bool)
@@ -25,6 +27,7 @@ class ProcessScanService:
 
         self.scanner = scanner or scan_processes
         self.analyzer = analyzer or analyze_processes
+        self.file_inspector = file_inspector or inspect_processes
         self.explanation_service = explanation_service
         self.explanation_service_factory = explanation_service_factory
         self.max_ai_explanations = max_ai_explanations
@@ -117,6 +120,15 @@ class ProcessScanService:
         report("Collecting running processes...")
         processes = self.scanner()
 
+        report("Checking digital signatures...")
+        file_inspection_error = None
+        try:
+            self.file_inspector(processes)
+        except Exception as exc:
+            # Signatures are extra evidence; their absence must not stop
+            # the scan. Rules treat missing signature data as "unknown".
+            file_inspection_error = str(exc)
+
         report("Applying rule-based security analysis...")
         analyses = self.analyzer(processes)
 
@@ -130,6 +142,7 @@ class ProcessScanService:
             "ai_candidate_count": 0,
             "ai_candidate_pids": [],
             "ai_selection_mode": "not_requested",
+            "file_inspection_error": file_inspection_error,
         }
 
         if not include_ai:

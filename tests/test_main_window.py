@@ -45,7 +45,7 @@ def test_main_window_initializes():
     window = MainWindow(scan_service=FakeScanService())
 
     assert window.windowTitle().startswith("ProcessSentinel")
-    assert window.process_table.columnCount() == 5
+    assert window.process_table.columnCount() == 6
     assert window.scan_button.isEnabled()
     assert not window.ai_enabled
 
@@ -80,3 +80,82 @@ def test_selecting_process_shows_rule_findings():
     assert "temporary folder" in details
 
     window.close()
+
+
+SHA = "ab" * 32
+
+
+class SignedScanService(FakeScanService):
+    def run_scan(self, include_ai=False, progress_callback=None):
+        result = super().run_scan(include_ai, progress_callback)
+        result["analyses"][0].update({
+            "signature_status": "valid",
+            "signer": "Example Vendor",
+            "sha256": SHA,
+        })
+        return result
+
+
+def show_first_process(window):
+    window._scan_succeeded(window.scan_service.run_scan())
+    window.process_table.selectRow(0)
+    window._show_selected_process()
+
+
+def test_signature_column_and_details_are_shown():
+    window = MainWindow(scan_service=SignedScanService())
+    show_first_process(window)
+
+    assert window.process_table.horizontalHeaderItem(4).text() == "SIGNATURE"
+    assert window.process_table.item(0, 4).text() == "Valid"
+    assert window.process_table.item(0, 5).text() == r"C:\Example\example.exe"
+
+    details = window.details_text.toPlainText()
+    assert "Digital signature: Valid" in details
+    assert "Signer: Example Vendor" in details
+    assert f"SHA-256: {SHA}" in details
+
+    window.close()
+
+
+def test_missing_signature_data_is_shown_as_not_checked():
+    window = MainWindow(scan_service=FakeScanService())
+    show_first_process(window)
+
+    assert window.process_table.item(0, 4).text() == "Not checked"
+    assert "SHA-256: Unavailable" in window.details_text.toPlainText()
+    assert not window.virustotal_button.isEnabled()
+
+    window.close()
+
+
+def test_virustotal_button_only_opens_hash_url(monkeypatch):
+    import pc_security.ui.main_window as main_window_module
+
+    opened = []
+    monkeypatch.setattr(
+        main_window_module.QDesktopServices,
+        "openUrl",
+        staticmethod(lambda url: opened.append(url.toString())),
+    )
+
+    window = MainWindow(scan_service=SignedScanService())
+    show_first_process(window)
+
+    assert window.virustotal_button.isEnabled()
+    window.virustotal_button.click()
+
+    assert opened == [f"https://www.virustotal.com/gui/file/{SHA}"]
+
+    window.close()
+
+
+def test_virustotal_url_rejects_non_hashes():
+    from pc_security.ui.main_window import virustotal_url
+
+    assert virustotal_url(SHA.upper()) == (
+        f"https://www.virustotal.com/gui/file/{SHA}"
+    )
+    assert virustotal_url(None) is None
+    assert virustotal_url("abc") is None
+    assert virustotal_url("../../upload?x=" + "a" * 50) is None

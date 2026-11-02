@@ -181,6 +181,13 @@ def _find_lookalike_target(normalized_name):
     return None
 
 
+def _is_microsoft_signer(signer):
+    """True for Microsoft's code-signing names, e.g. 'Microsoft Windows'."""
+    return isinstance(signer, str) and (
+        signer.strip().lower().startswith("microsoft ")
+    )
+
+
 def _account_name(username):
     """Return the account part of DOMAIN\\account, lower-cased."""
     return username.rsplit("\\", 1)[-1].strip().lower()
@@ -224,7 +231,8 @@ def analyze_process(process):
     Missing metadata alone does not increase the risk score.
 
     Optional process fields used by the rules (missing fields skip a rule):
-    parent_name, cmdline, username.
+    parent_name, cmdline, username, signature_status, signer.
+    A signature_status of "unknown" (or missing) never adds points.
     """
     findings = []
     name = process.get("name")
@@ -234,6 +242,9 @@ def analyze_process(process):
     normalized_parent = _normalize_name(parent_name)
     cmdline = process.get("cmdline")
     username = process.get("username")
+    signature_status = process.get("signature_status")
+    signer = process.get("signer")
+    is_unsigned = signature_status == "unsigned"
 
     # Missing information is a limitation, not proof of malicious activity.
     if not normalized_name:
@@ -456,7 +467,27 @@ def analyze_process(process):
                 user_writable_label = label
                 break
 
-    if user_writable_label is not None:
+    unsigned_scored = False
+
+    if user_writable_label is not None and is_unsigned:
+        # Combined form of rule 9: replaces it rather than adding to it.
+        unsigned_scored = True
+        _add_finding(
+            findings,
+            "UNSIGNED_IN_USER_WRITABLE_DIR",
+            "warning",
+            "Unsigned program in a user-writable folder",
+            (
+                f"This program runs from {user_writable_label}, a folder "
+                "that normal user accounts can write to, and it has no "
+                "digital signature, so its publisher cannot be confirmed. "
+                "Either fact alone is common; together they are a pattern "
+                "malware often uses. Small or home-made tools can also look "
+                "like this."
+            ),
+            30,
+        )
+    elif user_writable_label is not None:
         _add_finding(
             findings,
             "EXECUTABLE_IN_USER_WRITABLE_DIR",
@@ -470,6 +501,69 @@ def analyze_process(process):
                 "needed."
             ),
             10,
+        )
+
+    # Rule 10: Core Windows programs are signed by Microsoft. An unknown
+    # signature status is skipped because the check simply did not finish.
+    if normalized_name in WINDOWS_SYSTEM_PROCESSES and (
+        is_unsigned
+        or (
+            signature_status in {"valid", "invalid"}
+            and not _is_microsoft_signer(signer)
+        )
+    ):
+        unsigned_scored = True
+        signed_by = (
+            "has no digital signature"
+            if is_unsigned
+            else f"is signed by '{signer or 'an unnamed publisher'}'"
+        )
+        _add_finding(
+            findings,
+            "SYSTEM_PROCESS_NOT_MICROSOFT_SIGNED",
+            "warning",
+            "Windows system process name not signed by Microsoft",
+            (
+                f"{name} is a Windows component that Microsoft signs, but "
+                f"this file {signed_by}. A program using a Windows name "
+                "without Microsoft's signature may be impersonating it."
+            ),
+            50,
+        )
+
+    # Rule 11: A signature exists but Windows rejected it, for example
+    # because the file changed after signing or the certificate is not
+    # trusted on this computer.
+    if signature_status == "invalid":
+        _add_finding(
+            findings,
+            "INVALID_SIGNATURE",
+            "warning",
+            "Digital signature is invalid",
+            (
+                "This file has a digital signature, but Windows says it is "
+                "not valid: the file may have been modified after it was "
+                "signed, or the certificate is not trusted. Legitimate "
+                "software rarely ships with a broken signature."
+            ),
+            45,
+        )
+
+    # Rule 12: No signature at all. Common for small or open-source tools,
+    # so it adds few points unless combined with rule 9 or 10 above.
+    if is_unsigned and not unsigned_scored:
+        _add_finding(
+            findings,
+            "UNSIGNED_EXECUTABLE",
+            "info",
+            "Executable has no digital signature",
+            (
+                "This program is not digitally signed, so Windows cannot "
+                "confirm who published it or that it is unchanged. Many "
+                "legitimate small tools are unsigned; check where it came "
+                "from."
+            ),
+            5,
         )
 
     # Cap the score so its range remains predictable as rules are added.
@@ -506,6 +600,9 @@ def analyze_process(process):
         "cmdline": cmdline,
         "username": username,
         "create_time": process.get("create_time"),
+        "signature_status": signature_status,
+        "signer": signer,
+        "sha256": process.get("sha256"),
         "metadata_notes": list(process.get("metadata_notes") or []),
     }
 

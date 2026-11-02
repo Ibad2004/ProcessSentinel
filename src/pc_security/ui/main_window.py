@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 
-from PySide6.QtCore import QThread, Signal, Slot, Qt
+from PySide6.QtCore import QThread, QUrl, Signal, Slot, Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -24,6 +26,31 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+
+SIGNATURE_LABELS = {
+    "valid": "Valid",
+    "unsigned": "Unsigned",
+    "invalid": "Invalid",
+    "unknown": "Unknown",
+}
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def signature_label(status) -> str:
+    """Return a readable label for a signature status."""
+    return SIGNATURE_LABELS.get(status, "Not checked")
+
+
+def virustotal_url(sha256) -> str | None:
+    """Return the VirusTotal report URL for a hash, or None if invalid.
+
+    Only the hash goes into the URL; no file is ever uploaded.
+    """
+    if not isinstance(sha256, str) or not _SHA256_PATTERN.match(sha256):
+        return None
+    return f"https://www.virustotal.com/gui/file/{sha256.lower()}"
 
 
 class NumericTableWidgetItem(QTableWidgetItem):
@@ -257,10 +284,13 @@ class MainWindow(QMainWindow):
         table_layout = QVBoxLayout(table_frame)
         table_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.process_table = QTableWidget(0, 5)
+        self.process_table = QTableWidget(0, 6)
         self.process_table.setObjectName("processTable")
         self.process_table.setHorizontalHeaderLabels(
-            ["PID", "PROCESS", "RISK SCORE", "RISK LEVEL", "EXECUTABLE"]
+            [
+                "PID", "PROCESS", "RISK SCORE", "RISK LEVEL",
+                "SIGNATURE", "EXECUTABLE",
+            ]
         )
         self.process_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -278,12 +308,12 @@ class MainWindow(QMainWindow):
         self.process_table.verticalHeader().setDefaultSectionSize(36)
 
         table_header = self.process_table.horizontalHeader()
-        for column in range(4):
+        for column in range(5):
             table_header.setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
         table_header.setSectionResizeMode(
-            4, QHeaderView.ResizeMode.Stretch
+            5, QHeaderView.ResizeMode.Stretch
         )
 
         self.process_table.itemSelectionChanged.connect(
@@ -350,6 +380,18 @@ class MainWindow(QMainWindow):
         self.retry_button.setObjectName("secondaryButton")
         self.retry_button.clicked.connect(self._explain_selected)
         detail_layout.addWidget(self.retry_button)
+
+        self.virustotal_button = QPushButton(
+            "↗  Look up hash on VirusTotal"
+        )
+        self.virustotal_button.setObjectName("secondaryButton")
+        self.virustotal_button.setToolTip(
+            "Opens the VirusTotal report for this file's SHA-256 in your "
+            "browser. Only the hash is in the link; no file is uploaded."
+        )
+        self.virustotal_button.setEnabled(False)
+        self.virustotal_button.clicked.connect(self._open_virustotal)
+        detail_layout.addWidget(self.virustotal_button)
 
         splitter.addWidget(detail_frame)
         splitter.setSizes([780, 460])
@@ -963,6 +1005,14 @@ class MainWindow(QMainWindow):
             )
             level = str(analysis.get("risk_level", "low")).upper()
             level_item = QTableWidgetItem(level)
+            signature_status = analysis.get("signature_status")
+            signature_item = QTableWidgetItem(
+                signature_label(signature_status)
+            )
+            if signature_status == "invalid":
+                signature_item.setForeground(Qt.GlobalColor.red)
+            elif signature_status == "unsigned":
+                signature_item.setForeground(Qt.GlobalColor.yellow)
             path_item = QTableWidgetItem(
                 str(analysis.get("exe_path") or "Unavailable")
             )
@@ -975,7 +1025,10 @@ class MainWindow(QMainWindow):
                 level_item.setForeground(Qt.GlobalColor.green)
 
             for column, item in enumerate(
-                [pid_item, name_item, score_item, level_item, path_item]
+                [
+                    pid_item, name_item, score_item, level_item,
+                    signature_item, path_item,
+                ]
             ):
                 self.process_table.setItem(row, column, item)
 
@@ -1032,10 +1085,14 @@ class MainWindow(QMainWindow):
     @Slot()
     def _show_selected_process(self) -> None:
         pid = self._selected_pid()
-        if pid is None:
-            return
+        analysis = (
+            self.analyses_by_pid.get(pid) if pid is not None else None
+        )
+        self.virustotal_button.setEnabled(
+            analysis is not None
+            and virustotal_url(analysis.get("sha256")) is not None
+        )
 
-        analysis = self.analyses_by_pid.get(pid)
         if analysis is None:
             return
 
@@ -1057,6 +1114,13 @@ class MainWindow(QMainWindow):
             f"Executable path: {path}",
             f"Risk score: {score}",
             f"Risk level: {level}",
+            "",
+            "FILE IDENTITY",
+            "=" * 32,
+            "Digital signature: "
+            + signature_label(analysis.get("signature_status")),
+            f"Signer: {analysis.get('signer') or 'Unavailable'}",
+            f"SHA-256: {analysis.get('sha256') or 'Unavailable'}",
             "",
             "RULE FINDINGS",
             "=" * 32,
@@ -1099,6 +1163,23 @@ class MainWindow(QMainWindow):
         ])
 
         self.details_text.setPlainText("\n".join(lines))
+
+    @Slot()
+    def _open_virustotal(self) -> None:
+        """Open the selected file's VirusTotal page. Never uploads files."""
+        pid = self._selected_pid()
+        analysis = self.analyses_by_pid.get(pid) if pid is not None else None
+        url = virustotal_url((analysis or {}).get("sha256"))
+
+        if url is None:
+            QMessageBox.information(
+                self,
+                "Hash unavailable",
+                "No SHA-256 hash is available for the selected process.",
+            )
+            return
+
+        QDesktopServices.openUrl(QUrl(url))
 
     def _explain_selected(self) -> None:
         pid = self._selected_pid()

@@ -180,3 +180,59 @@ def test_explanation_service_factory_is_used_for_ai_scan():
 
     assert len(created) == 1
     assert created[0].called_pids == [101]
+
+
+def test_signatures_are_checked_after_scan_and_before_analysis():
+    events = []
+    processes = [sample_process(101, "example.exe")]
+
+    def fake_scanner():
+        events.append("scan")
+        return processes
+
+    def fake_inspector(items):
+        events.append("inspect")
+        assert items is processes
+        for item in items:
+            item["signature_status"] = "unsigned"
+
+    def fake_analyzer(items):
+        events.append("analyze")
+        assert items[0]["signature_status"] == "unsigned"
+        return [sample_analysis(items[0])]
+
+    messages = []
+    service = ProcessScanService(
+        scanner=fake_scanner,
+        analyzer=fake_analyzer,
+        file_inspector=fake_inspector,
+    )
+
+    result = service.run_scan(progress_callback=messages.append)
+
+    assert events == ["scan", "inspect", "analyze"]
+    assert "Checking digital signatures..." in messages
+    assert result["file_inspection_error"] is None
+
+
+def test_signature_check_failure_does_not_stop_scan():
+    def failing_inspector(items):
+        raise RuntimeError("signature service unavailable")
+
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "example.exe")],
+        analyzer=lambda items: [sample_analysis(items[0])],
+        file_inspector=failing_inspector,
+    )
+
+    result = service.run_scan()
+
+    assert result["scanned_count"] == 1
+    assert len(result["analyses"]) == 1
+    assert "unavailable" in result["file_inspection_error"]
+
+
+def test_default_pipeline_uses_inspect_processes():
+    from pc_security.scanner.file_inspector import inspect_processes
+
+    assert ProcessScanService().file_inspector is inspect_processes

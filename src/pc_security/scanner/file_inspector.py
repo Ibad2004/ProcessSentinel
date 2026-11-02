@@ -34,7 +34,9 @@ _POWERSHELL_SCRIPT = r"""
 $ErrorActionPreference = 'Continue'
 [Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$paths = @([Console]::In.ReadToEnd() | ConvertFrom-Json)
+# -InputObject (not a pipeline) so a JSON array is not wrapped in a second
+# array by Windows PowerShell 5.1.
+$paths = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
 $results = foreach ($p in $paths) {
     try {
         $sig = Get-AuthenticodeSignature -LiteralPath $p -ErrorAction Stop
@@ -134,7 +136,9 @@ def get_signatures(paths, timeout=None):
         try:
             key = _cache_key(path)
         except OSError as exc:
-            results[path] = _unknown(f"File could not be read: {exc.strerror}")
+            results[path] = _unknown(
+                f"File could not be read: {exc.strerror or exc}"
+            )
             continue
 
         with _cache_lock:
@@ -210,7 +214,7 @@ def get_sha256(path):
     try:
         key = _cache_key(path)
     except OSError as exc:
-        return None, f"File could not be read: {exc.strerror}"
+        return None, f"File could not be read: {exc.strerror or exc}"
 
     with _cache_lock:
         cached = _hash_cache.get(key)

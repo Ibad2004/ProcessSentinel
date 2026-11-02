@@ -97,3 +97,20 @@ def test_explanation_client_errors_are_not_hidden():
 
     with pytest.raises(RuntimeError, match="unavailable"):
         service.explain_process(sample_analysis())
+
+
+def test_signature_evidence_is_sent_to_ai():
+    client = FakeAIClient()
+    service = AIExplanationService(client=client)
+
+    analysis = sample_analysis()
+    analysis["signature_status"] = "unsigned"
+    analysis["signer"] = None
+    analysis["sha256"] = "ab" * 32
+
+    service.explain_process(analysis)
+
+    assert '"signature_status": "unsigned"' in client.prompt
+    assert '"signer": null' in client.prompt
+    assert "ab" * 32 in client.prompt
+    assert "does not mean unsigned" in client.system_prompt
