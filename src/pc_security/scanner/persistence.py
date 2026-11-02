@@ -40,7 +40,7 @@ REGISTRY_LOCATIONS = [
     ("HKEY_LOCAL_MACHINE", "HKLM", _RUN_WOW + "Once", SOURCE_REGISTRY_RUNONCE),
 ]
 
-_STARTUP_SUBPATH = r"Microsoft\Windows\Start Menu\Programs\Startup"
+_STARTUP_PARTS = ("Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
 BUILTIN_TASK_PREFIX = "\\microsoft\\windows\\"
 
@@ -89,7 +89,7 @@ def resolve_executable(command):
         return None, "The command does not name a program file."
 
     if not ntpath.dirname(candidate):
-        system_copy = ntpath.join(_system_root(), "System32", candidate)
+        system_copy = os.path.join(_system_root(), "System32", candidate)
         if os.path.isfile(system_copy):
             return system_copy, None
         return candidate, "Program name without a folder; location not confirmed."
@@ -153,8 +153,12 @@ def _read_c_string(data, offset, unicode):
         return data[offset:end].decode("utf-16-le", errors="replace")
 
     end = data.index(b"\x00", offset)
-    return data[offset:end].decode("mbcs" if sys.platform == "win32"
-                                   else "latin-1", errors="replace")
+    raw = data[offset:end]
+    try:
+        # The ANSI code page; the "mbcs" codec only exists on Windows.
+        return raw.decode("mbcs", errors="replace")
+    except LookupError:
+        return raw.decode("latin-1", errors="replace")
 
 
 def read_shortcut(path):
@@ -218,10 +222,16 @@ def _startup_folders():
     folders = []
     appdata = os.environ.get("APPDATA")
     programdata = os.environ.get("PROGRAMDATA")
+    # os.path for real folders (it is ntpath on Windows); ntpath is only
+    # used to parse Windows command strings.
     if appdata:
-        folders.append(("Current user", ntpath.join(appdata, _STARTUP_SUBPATH)))
+        folders.append(
+            ("Current user", os.path.join(appdata, *_STARTUP_PARTS))
+        )
     if programdata:
-        folders.append(("All users", ntpath.join(programdata, _STARTUP_SUBPATH)))
+        folders.append(
+            ("All users", os.path.join(programdata, *_STARTUP_PARTS))
+        )
     return folders
 
 
@@ -245,7 +255,7 @@ def _read_startup_folder_entries(notes):
             if file_name.lower() == "desktop.ini":
                 continue
 
-            path = ntpath.join(folder, file_name)
+            path = os.path.join(folder, file_name)
             if not os.path.isfile(path):
                 continue
 
@@ -537,7 +547,9 @@ def scan_startup_entries(
     existing = []
     for entry in entries:
         path = entry["executable_path"]
-        entry["exists"] = bool(path) and ntpath.isabs(path) and os.path.isfile(path)
+        entry["exists"] = (
+            bool(path) and os.path.isabs(path) and os.path.isfile(path)
+        )
         if entry["exists"]:
             existing.append(path)
 
@@ -558,7 +570,7 @@ def scan_startup_entries(
             entry["notes"].append(f"Signature unknown: {signature['reason']}")
 
         # "Missing" only when we know the full path and it is absent.
-        known_path = bool(path) and ntpath.isabs(path)
+        known_path = bool(path) and os.path.isabs(path)
         _flag_entry(
             entry,
             signature,

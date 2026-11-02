@@ -1,7 +1,24 @@
 
 import sys
 
+import pytest
+
 import pc_security.main as main_module
+
+
+@pytest.fixture(autouse=True)
+def no_real_env_file(monkeypatch, tmp_path):
+    """main() must not read the real .env or touch the real app folder."""
+    monkeypatch.setattr(main_module, "get_app_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        main_module, "get_history_path", lambda: tmp_path / "data" / "h.db"
+    )
+    loaded = []
+    monkeypatch.setattr(
+        main_module, "load_dotenv",
+        lambda dotenv_path=None, **kwargs: loaded.append(dotenv_path),
+    )
+    return loaded
 
 
 class FakeApplication:
@@ -166,3 +183,54 @@ def test_main_shares_ai_config_and_history(monkeypatch, tmp_path):
     config["ai"]["model"] = "m2"
     service = kwargs["scan_service"].explanation_service_factory()
     assert service.client.model == "m2"
+
+
+def test_self_test_flag_imports_modules_without_opening_a_window(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(sys, "argv", ["ProcessSentinel.exe", "--self-test"])
+    monkeypatch.setattr(main_module, "get_app_directory", lambda: tmp_path)
+    monkeypatch.setattr(main_module, "QApplication", None)  # must not be used
+    monkeypatch.setattr(main_module, "load_config", lambda: {"app": {}})
+
+    assert main_module.main() == 0
+    assert (tmp_path / "data").is_dir()
+    assert (tmp_path / "logs").is_dir()
+    assert not (tmp_path / "data" / "history.db").exists()
+
+
+def test_self_test_reports_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "get_app_directory", lambda: tmp_path)
+
+    def broken_config():
+        raise ValueError("bad settings")
+
+    monkeypatch.setattr(main_module, "load_config", broken_config)
+
+    assert main_module.run_self_test() == 1
+
+
+def test_runtime_directories_created_and_failures_reported(tmp_path):
+    from pc_security.core.paths import ensure_runtime_directories
+
+    assert ensure_runtime_directories(tmp_path) == []
+    assert (tmp_path / "data").is_dir() and (tmp_path / "logs").is_dir()
+
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "logs").write_text("a file where a folder should be")
+    assert ensure_runtime_directories(blocked) == ["logs"]
+
+
+def test_main_creates_runtime_directories(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(main_module, "MainWindow", FakeMainWindow)
+    monkeypatch.setattr(main_module, "get_app_directory", lambda: tmp_path)
+    monkeypatch.setattr(
+        main_module, "get_history_path", lambda: tmp_path / "data" / "h.db"
+    )
+    monkeypatch.setattr(main_module, "load_config", lambda: {"ai": {}})
+
+    assert main_module.main() == 0
+    assert (tmp_path / "data").is_dir()
+    assert (tmp_path / "logs").is_dir()

@@ -19,3 +19,9 @@ logs/*.log
 # Local scan history (contains this computer's process list)
 data/history.db
 data/history.db-journal
+
+# Build output (ProcessSentinel.spec stays tracked)
+build/
+dist/
+*.egg-info/
+*.spec.bak

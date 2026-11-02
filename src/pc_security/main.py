@@ -1,6 +1,7 @@
 
 """Application entry point for ProcessSentinel."""
 
+import importlib
 import sys
 
 from dotenv import load_dotenv
@@ -8,7 +9,11 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pc_security.core.config import load_config
 from pc_security.core.history import DEFAULT_MAX_SCANS, ScanHistory
-from pc_security.core.paths import get_app_directory, get_history_path
+from pc_security.core.paths import (
+    ensure_runtime_directories,
+    get_app_directory,
+    get_history_path,
+)
 from pc_security.core.scan_service import ProcessScanService
 from pc_security.ui.main_window import MainWindow
 
@@ -43,8 +48,65 @@ def build_scan_history(history_config):
         return ScanHistory(get_history_path())
 
 
+SELF_TEST_MODULES = (
+    "pc_security.ai.explanation_service",
+    "pc_security.ai.groq_client",
+    "pc_security.core.config",
+    "pc_security.core.history",
+    "pc_security.core.platform_info",
+    "pc_security.core.privacy",
+    "pc_security.core.scan_service",
+    "pc_security.core.settings_store",
+    "pc_security.scanner.file_inspector",
+    "pc_security.scanner.network_scanner",
+    "pc_security.scanner.persistence",
+    "pc_security.scanner.process_scanner",
+    "pc_security.security.analyzer",
+    "pc_security.ui.history_tab",
+    "pc_security.ui.main_window",
+    "pc_security.ui.process_tree",
+    "pc_security.ui.report_export",
+    "pc_security.ui.settings_dialog",
+)
+
+
+def _say(message):
+    # A windowed PyInstaller build has no console (sys.stdout is None).
+    if sys.stdout is not None:
+        print(message)
+
+
+def run_self_test() -> int:
+    """Check a build without opening a window or scanning anything.
+
+    Imports every module, loads the configuration, and creates data/ and
+    logs/ beside the app. Returns 0 on success, 1 on failure.
+    """
+    try:
+        for name in SELF_TEST_MODULES:
+            importlib.import_module(name)
+        load_config()
+        failed = ensure_runtime_directories(get_app_directory())
+    except Exception as exc:
+        _say(f"ProcessSentinel self-test FAILED: {exc}")
+        return 1
+
+    if failed:
+        _say(f"ProcessSentinel self-test FAILED: cannot create {failed}")
+        return 1
+
+    _say("ProcessSentinel self-test OK")
+    return 0
+
+
 def main() -> int:
+    if "--self-test" in sys.argv[1:]:
+        return run_self_test()
+
     app_directory = get_app_directory()
+    # data/ and logs/ beside the app; failure is not fatal (history then
+    # reports a non-blocking warning).
+    ensure_runtime_directories(app_directory)
 
     # Load .env from the application directory.
     env_file = app_directory / ".env"

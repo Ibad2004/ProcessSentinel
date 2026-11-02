@@ -145,3 +145,129 @@ def test_new_since_last_scan_is_sent_and_explained():
 
     assert '"is_new_since_last_scan": true' in client.prompt
     assert "does not mean malicious" in client.system_prompt
+
+
+# ---------------------------------------------------------------------------
+# Step 4: privacy and evidence completeness
+# ---------------------------------------------------------------------------
+
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
+from pc_security.ai.explanation_service import (
+    MAX_CMDLINE_CHARS,
+    RULE_GLOSSARY,
+    SYSTEM_PROMPT,
+    build_evidence,
+)
+
+
+def private_analysis():
+    analysis = sample_analysis()
+    analysis.update({
+        "exe_path": r"C:\Users\alice\AppData\Roaming\tool.exe",
+        "cmdline": r'"C:\Users\alice\AppData\Roaming\tool.exe" --home C:\Users\alice',
+        "username": r"DESKTOP-1\alice",
+        "parent_pid": 4000,
+        "parent_name": "explorer.exe",
+        "create_time": datetime(2026, 11, 3, 9, 30, 15).timestamp(),
+        "signature_status": "valid",
+        "signer": "Alice Software Ltd",
+        "sha256": "ab" * 32,
+        "outbound_connection_count": 2,
+        "listening_ports": [8080],
+        "is_new_since_last_scan": True,
+    })
+    analysis["findings"][0]["explanation"] = (
+        r"Runs as 'DESKTOP-1\alice' from C:\Users\alice\AppData"
+    )
+    return analysis
+
+
+def evidence_for(analysis, monkeypatch):
+    monkeypatch.setenv("USERNAME", "someone-else")
+    client = FakeAIClient()
+    AIExplanationService(client=client).explain_process(analysis)
+    text = client.prompt.split("PROCESS ANALYSIS EVIDENCE:\n", 1)[1]
+    return json.loads(text)
+
+
+def test_username_is_masked_everywhere_but_signer_kept(monkeypatch):
+    evidence = evidence_for(private_analysis(), monkeypatch)
+
+    assert evidence["exe_path"] == r"C:\Users\<user>\AppData\Roaming\tool.exe"
+    assert evidence["cmdline"] == (
+        r'"C:\Users\<user>\AppData\Roaming\tool.exe" --home C:\Users\<user>'
+    )
+    assert evidence["username"] == "<user>"
+    assert "alice" not in evidence["findings"][0]["description"].lower()
+    # The signer is a publisher, not the user: kept as evidence.
+    assert evidence["signer"] == "Alice Software Ltd"
+
+
+def test_system_account_is_kept_for_evidence(monkeypatch):
+    analysis = private_analysis()
+    analysis["username"] = r"NT AUTHORITY\SYSTEM"
+
+    assert evidence_for(analysis, monkeypatch)["username"] == (
+        r"NT AUTHORITY\SYSTEM"
+    )
+
+
+def test_evidence_contains_every_rule_field(monkeypatch):
+    evidence = evidence_for(private_analysis(), monkeypatch)
+
+    assert evidence["parent_name"] == "explorer.exe"
+    assert evidence["parent_pid"] == 4000
+    assert evidence["create_time"] == "2026-11-03T09:30:15"
+    assert evidence["signature_status"] == "valid"
+    assert evidence["sha256"] == "ab" * 32
+    assert evidence["outbound_connection_count"] == 2
+    assert evidence["listening_ports"] == [8080]
+    assert evidence["is_new_since_last_scan"] is True
+
+
+def test_long_cmdline_is_truncated(monkeypatch):
+    analysis = private_analysis()
+    analysis["cmdline"] = "powershell " + "A" * 2000
+
+    cmdline = evidence_for(analysis, monkeypatch)["cmdline"]
+
+    assert len(cmdline) <= MAX_CMDLINE_CHARS + len(" [truncated]")
+    assert cmdline.endswith("[truncated]")
+
+
+def test_findings_are_capped_at_20():
+    analysis = sample_analysis()
+    analysis["findings"] = analysis["findings"] * 30
+
+    assert len(build_evidence(analysis)["findings"]) == 20
+
+
+@pytest.mark.parametrize("value", [None, "yesterday", True, 1e20])
+def test_bad_create_time_becomes_none(value):
+    analysis = sample_analysis()
+    analysis["create_time"] = value
+
+    assert build_evidence(analysis)["create_time"] is None
+
+
+def test_prompt_lists_every_analyzer_rule_code():
+    import pc_security.security.analyzer as analyzer
+
+    source = Path(analyzer.__file__).read_text(encoding="utf-8")
+    codes = set(re.findall(r'^\s+"([A-Z][A-Z0-9_]{3,})",\s*$', source, re.M))
+    codes = {code for code in codes if "_" in code}
+
+    assert "SYSTEM_PROCESS_NOT_MICROSOFT_SIGNED" in codes
+    assert len(codes) >= 18
+    assert codes <= set(RULE_GLOSSARY)
+    for code in codes:
+        assert f"- {code}:" in SYSTEM_PROMPT
+
+
+def test_prompt_states_which_fields_are_masked():
+    assert "<user>" in SYSTEM_PROMPT
+    assert "exe_path, cmdline, username" in SYSTEM_PROMPT

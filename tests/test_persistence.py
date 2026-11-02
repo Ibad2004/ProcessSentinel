@@ -129,6 +129,17 @@ def make_file(path, content=b"MZ"):
     return str(path)
 
 
+def same_path(first, second):
+    """Compare paths the way Windows does, on any OS.
+
+    On Linux tmp_path uses "/" while expanded Windows commands use "\\", so
+    both sides are normalised (separators and case) before comparing.
+    """
+    return ntpath.normcase(ntpath.normpath(first)) == ntpath.normcase(
+        ntpath.normpath(second)
+    )
+
+
 def by_name(result):
     return {entry["name"]: entry for entry in result["entries"]}
 
@@ -216,7 +227,7 @@ def test_registry_entries_read_only_with_key_read(env):
     assert entries["Agent"]["source"] == "Registry Run"
     assert entries["Agent"]["location"] == "HKCU\\" + RUN
     assert entries["Agent"]["executable_path"] == good
-    assert entries["Legacy"]["executable_path"] == good
+    assert same_path(entries["Legacy"]["executable_path"], good)
     assert entries["Agent"]["signature_status"] == "valid"
     # Every key is opened with KEY_READ and nothing else.
     assert len(fake.opened) == 6

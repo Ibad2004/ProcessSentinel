@@ -10,6 +10,12 @@ from pc_security.scanner.process_scanner import scan_processes
 from pc_security.security.analyzer import analyze_processes
 
 
+NO_INDICATORS_MESSAGE = (
+    "No indicators found by the current rules. Select a process and click "
+    "Explain to ask the AI about it."
+)
+
+
 class ProcessScanService:
     """Coordinate process scanning and evidence-based AI explanations."""
 
@@ -78,44 +84,13 @@ class ProcessScanService:
             ),
         )
 
-    @classmethod
-    def _rank_contextual_candidates(cls, analyses):
-        """Choose review candidates when no positive scores exist.
-
-        This is a review prioritization, not a malware ranking. Processes
-        with missing metadata are prioritized for review because less is
-        known about them, not because missing data proves danger.
-        """
-        valid_analyses = [
-            item for item in analyses
-            if isinstance(item, dict) and item.get("pid") is not None
-        ]
-
-        def review_key(item):
-            score = item.get("risk_score", 0)
-            score = (
-                score
-                if isinstance(score, (int, float))
-                and not isinstance(score, bool)
-                else 0
-            )
-
-            path = item.get("exe_path")
-            name = item.get("name")
-
-            # Prioritize processes with less available evidence for review.
-            missing_metadata = int(not name) + int(not path)
-
-            return (
-                -missing_metadata,
-                -score,
-                cls._pid_sort_key(item),
-            )
-
-        return sorted(valid_analyses, key=review_key)
-
     def run_scan(self, include_ai=False, progress_callback=None):
-        """Scan processes and optionally explain up to 10 candidates."""
+        """Scan processes and optionally explain positive-score candidates.
+
+        With include_ai, only processes that a rule scored above zero are
+        sent to the AI (at most max_ai_explanations). If none were scored,
+        nothing is sent and ai_selection_mode is "no_indicators".
+        """
         if not isinstance(include_ai, bool):
             raise ValueError("include_ai must be a boolean")
 
@@ -192,17 +167,16 @@ class ProcessScanService:
             report("Rule-based scan complete.")
             return result
 
-        positive_candidates = self._rank_candidates(analyses)
+        candidates = self._rank_candidates(analyses)
 
-        if positive_candidates:
-            candidates = positive_candidates
-            result["ai_selection_mode"] = "positive_score"
-        else:
-            # Do not silently skip AI when all rule scores are zero.
-            # Explain that these are contextual review candidates.
-            candidates = self._rank_contextual_candidates(analyses)
-            result["ai_selection_mode"] = "contextual_review"
+        if not candidates:
+            # Nothing is sent to the AI automatically; the user can still
+            # explain a selected process manually.
+            result["ai_selection_mode"] = "no_indicators"
+            report(NO_INDICATORS_MESSAGE)
+            return result
 
+        result["ai_selection_mode"] = "positive_score"
         selected = candidates[:self.max_ai_explanations]
 
         result["ai_candidate_count"] = len(candidates)
@@ -211,23 +185,10 @@ class ProcessScanService:
             item["pid"] for item in selected
         ]
 
-        if not selected:
-            report("Scan complete. No processes were available for review.")
-            return result
-
         explanation_service = self._get_explanation_service()
 
         total = len(selected)
-
-        if result["ai_selection_mode"] == "positive_score":
-            report(
-                f"Explaining the top {total} positive-score candidates."
-            )
-        else:
-            report(
-                f"No positive-score candidates. Reviewing {total} "
-                "processes contextually; this is not a suspiciousness ranking."
-            )
+        report(f"Explaining the top {total} positive-score candidates.")
 
         for index, analysis in enumerate(selected, start=1):
             pid = analysis.get("pid")

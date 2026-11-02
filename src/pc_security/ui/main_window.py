@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from pc_security.core.platform_info import is_running_as_admin
+from pc_security.core.scan_service import NO_INDICATORS_MESSAGE
 from pc_security.ui.admin_banner import AdminBanner
 from pc_security.ui.common import (
     FLAGGED_ROW_BRUSH,
@@ -54,6 +55,14 @@ _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 MAX_DETAIL_ENDPOINTS = 10
 
 NEW_ROLE = Qt.ItemDataRole.UserRole + 1
+
+AI_DATA_NOTICE = (
+    "Sent to Groq only when you ask for an explanation: process name, PID, "
+    "score and findings, path and command line, parent, start time, "
+    "signature, SHA-256, connection count and listening ports. Your Windows "
+    "user name is replaced with <user>. Remote addresses and startup items "
+    "are never sent."
+)
 
 
 def virustotal_url(sha256) -> str | None:
@@ -225,8 +234,9 @@ class MainWindow(QMainWindow):
         self.ai_scan_button = QPushButton("✦  Scan + AI analysis")
         self.ai_scan_button.setObjectName("secondaryButton")
         self.ai_scan_button.setToolTip(
-            "Scan processes and request AI explanations for up to "
-            "10 candidates selected by the scan service."
+            "Scan processes and request AI explanations for up to 10 "
+            "processes that the rules scored above zero. If none were "
+            "scored, nothing is sent to the AI."
         )
         self.ai_scan_button.clicked.connect(self._start_ai_scan)
         intro.addWidget(self.ai_scan_button)
@@ -428,7 +438,17 @@ class MainWindow(QMainWindow):
         )
         self.retry_button.setObjectName("secondaryButton")
         self.retry_button.clicked.connect(self._explain_selected)
+        self.retry_button.setToolTip(AI_DATA_NOTICE)
         detail_layout.addWidget(self.retry_button)
+
+        self.ai_privacy_hint = QLabel(
+            "Explaining sends this process's details to Groq "
+            "(user name masked)."
+        )
+        self.ai_privacy_hint.setObjectName("muted")
+        self.ai_privacy_hint.setWordWrap(True)
+        self.ai_privacy_hint.setToolTip(AI_DATA_NOTICE)
+        detail_layout.addWidget(self.ai_privacy_hint)
 
         self.virustotal_button = QPushButton(
             "↗  Look up hash on VirusTotal"
@@ -488,6 +508,11 @@ class MainWindow(QMainWindow):
 
         lab_heading_layout.addWidget(lab_title)
         lab_heading_layout.addWidget(lab_subtitle)
+
+        self.ai_privacy_label = QLabel(AI_DATA_NOTICE)
+        self.ai_privacy_label.setObjectName("muted")
+        self.ai_privacy_label.setWordWrap(True)
+        lab_heading_layout.addWidget(self.ai_privacy_label)
         lab_header.addLayout(lab_heading_layout, 1)
 
         self.ai_lab_mode_label = QLabel(
@@ -1008,7 +1033,7 @@ class MainWindow(QMainWindow):
         if include_ai:
             self.ai_lab_text.setPlainText(
                 "Scanning processes and preparing AI explanations for up to "
-                "10 risk-ranked or contextual-review candidates..."
+                "10 processes with positive rule scores..."
             )
             self.ai_analysis_text.setPlainText(
                 "AI scan is running. Open the Explainable AI Lab for reports."
@@ -1122,28 +1147,19 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Fallback for older scan-service versions.
-        if not self.ai_candidate_pids:
-            self.ai_candidate_pids = [
-                int(item["pid"])
-                for item in sorted(
-                    self.analyses,
-                    key=lambda item: (
-                        -int(item.get("risk_score", 0) or 0),
-                        int(item.get("pid", 0) or 0),
-                    ),
-                )
-                if item.get("pid") is not None
-                and int(item.get("risk_score", 0) or 0) > 0
-            ][:10]
+        self.ai_candidate_table.setRowCount(0)
 
-        if self.ai_selection_mode == "contextual_review":
-            mode_text = (
-                "CONTEXTUAL REVIEW: no positive rule scores were available. "
-                "Candidates were selected for additional context, not because "
-                "they were automatically considered suspicious."
+        if self.ai_selection_mode == "no_indicators":
+            # Nothing was sent to the AI; manual Explain still works.
+            self.ai_lab_mode_label.setText(NO_INDICATORS_MESSAGE)
+            self.ai_lab_text.setPlainText(
+                NO_INDICATORS_MESSAGE
+                + "\n\nThis does not prove that every process is safe."
             )
-        elif self.ai_selection_mode == "positive_score":
+            self.ai_analysis_text.setPlainText(NO_INDICATORS_MESSAGE)
+            return
+
+        if self.ai_selection_mode == "positive_score":
             mode_text = (
                 "RISK REVIEW: candidates were selected using positive "
                 "rule-based scores. Scores are not malware verdicts."

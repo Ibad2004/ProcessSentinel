@@ -419,3 +419,59 @@ def test_real_history_store_in_pipeline(tmp_path):
     service.run_scan()
 
     assert len(history.list_scans()) == 2
+
+
+def test_no_positive_scores_sends_nothing_to_ai():
+    fake_ai = FakeExplanationService()
+    messages = []
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "a.exe"), sample_process(102, "b.exe")],
+        analyzer=lambda items: [sample_analysis(item, 0) for item in items],
+        explanation_service=fake_ai,
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+    )
+
+    result = service.run_scan(include_ai=True, progress_callback=messages.append)
+
+    assert fake_ai.called_pids == []
+    assert result["ai_selection_mode"] == "no_indicators"
+    assert result["ai_candidate_pids"] == []
+    assert result["ai_explanations"] == []
+    assert any("No indicators found" in m for m in messages)
+
+
+def test_no_indicators_never_builds_an_ai_client():
+    def factory():
+        raise AssertionError("AI must not be contacted")
+
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "a.exe")],
+        analyzer=lambda items: [sample_analysis(items[0], 0)],
+        explanation_service_factory=factory,
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+    )
+
+    assert service.run_scan(include_ai=True)["ai_selection_mode"] == (
+        "no_indicators"
+    )
+
+
+def test_positive_scores_use_positive_score_mode():
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "a.exe")],
+        analyzer=lambda items: [sample_analysis(items[0], 10)],
+        explanation_service=FakeExplanationService(),
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+    )
+
+    result = service.run_scan(include_ai=True)
+
+    assert result["ai_selection_mode"] == "positive_score"
+    assert result["ai_candidate_pids"] == [101]
+
+
+def test_contextual_review_code_is_gone():
+    assert not hasattr(ProcessScanService, "_rank_contextual_candidates")

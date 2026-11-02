@@ -7,11 +7,12 @@ Every value is HTML-escaped and Windows user names are masked.
 from __future__ import annotations
 
 import html
-import os
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+# Shared with the AI evidence so both hide the same things.
+from pc_security.core.privacy import mask_usernames
 
 
 DISCLAIMER = (
@@ -20,15 +21,6 @@ DISCLAIMER = (
     "mean it is safe. AI explanations can be wrong. Verify important "
     "findings with trusted tools before acting. ProcessSentinel is "
     "read-only: it did not stop, change or delete anything."
-)
-
-_SHARED_PROFILES = {"public", "default", "default user", "all users"}
-
-# The profile folder is either followed by a separator (names may contain
-# spaces, e.g. C:\Users\Jo Smith\AppData) or is a single word at the end.
-_USER_PATH = re.compile(
-    r"(?i)([a-z]:[\\/]+users[\\/]+)"
-    r"(?:([^\\/\r\n\"'<>:|?*,;]{1,64}?)(?=[\\/])|([^\\/\s\"'<>:|?*,;]+))"
 )
 
 _STYLE = """
@@ -45,28 +37,6 @@ th { background: #edf2f8; }
 .finding { margin: 4px 0; }
 pre { white-space: pre-wrap; background: #f8fafc; border: 1px solid #d7e0ec; padding: 12px; border-radius: 8px; }
 """
-
-
-def mask_usernames(text: Any, username: str | None = None) -> str:
-    """Replace C:\\Users\\<name> with C:\\Users\\<user> and hide the account name."""
-    if text is None:
-        return ""
-    text = str(text)
-
-    def replace(match):
-        name = match.group(2) or match.group(3)
-        if name.strip().lower() in _SHARED_PROFILES:
-            return match.group(0)
-        return match.group(1) + "<user>"
-
-    text = _USER_PATH.sub(replace, text)
-
-    username = username if username is not None else os.environ.get("USERNAME")
-    if username and len(username) >= 2:
-        text = re.sub(
-            rf"(?i)(?<![\w]){re.escape(username)}(?![\w])", "<user>", text
-        )
-    return text
 
 
 def _safe(value: Any, username: str | None) -> str:

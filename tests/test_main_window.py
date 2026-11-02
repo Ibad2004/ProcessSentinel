@@ -794,3 +794,59 @@ def test_network_click_selects_process_in_tree_view():
     assert window._select_process_from_network(row, 0)
     assert window._selected_pid() == 1111
     window.close()
+
+
+# ---------------------------------------------------------------------------
+# Step 4: no-indicators mode and AI privacy notice
+# ---------------------------------------------------------------------------
+
+NO_INDICATORS = (
+    "No indicators found by the current rules. Select a process and click "
+    "Explain to ask the AI about it."
+)
+
+
+def test_no_indicators_message_and_manual_explain_still_works():
+    explained = []
+
+    class FakeService:
+        def explain_process(self, analysis):
+            explained.append(analysis["pid"])
+            return {"pid": analysis["pid"], "explanation": "Manual report."}
+
+    window = MainWindow(
+        scan_service=FakeScanService(),
+        explanation_service_factory=FakeService,
+    )
+    result = window.scan_service.run_scan(include_ai=True)
+    result.update({
+        "ai_enabled_for_scan": True,
+        "ai_selection_mode": "no_indicators",
+        "ai_candidate_pids": [],
+    })
+
+    window._scan_succeeded(result)
+
+    assert window.ai_lab_mode_label.text() == NO_INDICATORS
+    assert NO_INDICATORS in window.ai_analysis_text.toPlainText()
+    assert window.ai_candidate_table.rowCount() == 0
+
+    window.process_table.selectRow(0)
+    window._explain_selected()
+    assert window.worker.wait(5000)
+    _APP.processEvents()
+
+    assert explained == [4321]
+    assert "Manual report." in window.ai_lab_text.toPlainText()
+    window.close()
+
+
+def test_ai_privacy_notice_is_shown():
+    window = MainWindow(scan_service=FakeScanService())
+
+    notice = window.ai_privacy_label.text()
+    assert "Groq" in notice
+    assert "<user>" in notice
+    assert "never sent" in notice
+    assert "user name masked" in window.ai_privacy_hint.text()
+    window.close()
