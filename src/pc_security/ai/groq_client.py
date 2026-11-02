@@ -21,7 +21,7 @@ class GroqClient:
         model="openai/gpt-oss-20b",
         timeout=30,
         api_key=None,
-        max_tokens=250,
+        max_tokens=2000,
     ):
         if not isinstance(timeout, (int, float)) or timeout <= 0:
             raise ValueError("timeout must be a positive number")

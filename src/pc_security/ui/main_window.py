@@ -64,7 +64,7 @@ class MainWindow(QMainWindow):
         ai_enabled: bool = False,
         ai_model: str = "openai/gpt-oss-20b",
         ai_timeout: int = 30,
-        ai_max_tokens: int = 800,
+        ai_max_tokens: int = 2000,
         explanation_service_factory=None,
         parent=None,
     ):

@@ -51,7 +51,7 @@ def test_generate_returns_response_text():
     assert request.full_url == GroqClient.API_URL
     assert request.get_header("Authorization") == "Bearer test-key"
     assert body["model"] == "openai/gpt-oss-20b"
-    assert body["max_completion_tokens"] == 250
+    assert body["max_completion_tokens"] == 2000
     assert len(body["messages"]) == 2
 
 

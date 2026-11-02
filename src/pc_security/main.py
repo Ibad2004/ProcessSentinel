@@ -2,23 +2,35 @@
 """Application entry point for ProcessSentinel."""
 
 import sys
-from pathlib import Path
 
 from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pc_security.core.config import load_config
+from pc_security.core.paths import get_app_directory
 from pc_security.core.scan_service import ProcessScanService
 from pc_security.ui.main_window import MainWindow
 
 
-def get_app_directory() -> Path:
-    """Return the directory containing the executable or project."""
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+def build_explanation_service_factory(ai_config):
+    """Return a factory that creates AI services using configured limits.
 
-    # main.py is inside src/pc_security/
-    return Path(__file__).resolve().parents[2]
+    A new client is created per request so a key saved from the AI
+    settings dialog is picked up without restarting the application.
+    """
+
+    def factory():
+        from pc_security.ai.explanation_service import AIExplanationService
+        from pc_security.ai.groq_client import GroqClient
+
+        client = GroqClient(
+            model=ai_config.get("model", "openai/gpt-oss-20b"),
+            timeout=ai_config.get("timeout", 30),
+            max_tokens=ai_config.get("max_tokens", 2000),
+        )
+        return AIExplanationService(client=client)
+
+    return factory
 
 
 def main() -> int:
@@ -51,14 +63,21 @@ def main() -> int:
     )
     app.setStyle("Fusion")
 
-    scan_service = ProcessScanService()
+    explanation_service_factory = build_explanation_service_factory(
+        ai_config
+    )
+
+    scan_service = ProcessScanService(
+        explanation_service_factory=explanation_service_factory,
+    )
 
     window = MainWindow(
         scan_service=scan_service,
         ai_enabled=ai_config.get("enabled", False),
         ai_model=ai_config.get("model", "openai/gpt-oss-20b"),
         ai_timeout=ai_config.get("timeout", 30),
-        ai_max_tokens=ai_config.get("max_tokens", 250),
+        ai_max_tokens=ai_config.get("max_tokens", 2000),
+        explanation_service_factory=explanation_service_factory,
     )
 
     window.show()

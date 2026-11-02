@@ -159,3 +159,24 @@ def test_invalid_include_ai_value_is_rejected():
 
     with pytest.raises(ValueError):
         service.run_scan(include_ai="yes")
+
+
+def test_explanation_service_factory_is_used_for_ai_scan():
+    processes = [sample_process(101, "review.exe")]
+    created = []
+
+    def factory():
+        service = FakeExplanationService()
+        created.append(service)
+        return service
+
+    service = ProcessScanService(
+        scanner=lambda: processes,
+        analyzer=lambda items: [sample_analysis(items[0], 35)],
+        explanation_service_factory=factory,
+    )
+
+    service.run_scan(include_ai=True)
+
+    assert len(created) == 1
+    assert created[0].called_pids == [101]

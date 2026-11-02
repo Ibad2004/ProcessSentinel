@@ -1,4 +1,4 @@
-﻿
+
 import sys
 
 import pc_security.main as main_module
@@ -76,18 +76,57 @@ def test_main_launches_application(monkeypatch):
     assert window.kwargs["ai_model"] == "openai/gpt-oss-20b"
 
 
-def test_main_handles_missing_configuration(monkeypatch, capsys):
+def test_main_handles_missing_configuration(monkeypatch):
     def fail_to_load_config():
         raise FileNotFoundError("Configuration file not found")
+
+    shown_errors = []
+
+    class FakeMessageBox:
+        @staticmethod
+        def critical(parent, title, text):
+            shown_errors.append((title, text))
 
     monkeypatch.setattr(
         main_module, "load_config", fail_to_load_config
     )
+    monkeypatch.setattr(main_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(main_module, "QMessageBox", FakeMessageBox)
 
     result = main_module.main()
 
-    captured = capsys.readouterr()
-
     assert result == 1
-    assert "Could not load application configuration" in captured.out
+    assert len(shown_errors) == 1
+    assert "Could not load application configuration" in shown_errors[0][1]
+
+
+def test_configured_max_tokens_reach_groq_client():
+    factory = main_module.build_explanation_service_factory(
+        {"model": "test-model", "timeout": 12, "max_tokens": 2000}
+    )
+
+    service = factory()
+
+    assert service.client.model == "test-model"
+    assert service.client.timeout == 12
+    assert service.client.max_tokens == 2000
+
+
+def test_main_passes_configured_ai_settings(monkeypatch):
+    monkeypatch.setattr(main_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(main_module, "MainWindow", FakeMainWindow)
+    monkeypatch.setattr(
+        main_module,
+        "load_config",
+        lambda: {"ai": {"enabled": True, "max_tokens": 2000}},
+    )
+
+    main_module.main()
+
+    kwargs = FakeMainWindow.last_instance.kwargs
+    assert kwargs["ai_max_tokens"] == 2000
+
+    scan_service = kwargs["scan_service"]
+    service = scan_service.explanation_service_factory()
+    assert service.client.max_tokens == 2000
 

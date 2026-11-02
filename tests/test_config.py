@@ -17,4 +17,4 @@ def test_load_default_config() -> None:
     assert config["ai"]["enabled"] is True
     assert config["ai"]["model"] == "openai/gpt-oss-20b"
     assert config["ai"]["timeout"] == 30
-    assert config["ai"]["max_tokens"] == 250
+    assert config["ai"]["max_tokens"] == 2000

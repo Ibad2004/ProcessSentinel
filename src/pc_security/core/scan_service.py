@@ -14,6 +14,7 @@ class ProcessScanService:
         analyzer=None,
         explanation_service=None,
         max_ai_explanations=10,
+        explanation_service_factory=None,
     ):
         if (
             isinstance(max_ai_explanations, bool)
@@ -25,7 +26,20 @@ class ProcessScanService:
         self.scanner = scanner or scan_processes
         self.analyzer = analyzer or analyze_processes
         self.explanation_service = explanation_service
+        self.explanation_service_factory = explanation_service_factory
         self.max_ai_explanations = max_ai_explanations
+
+    def _get_explanation_service(self):
+        """Return the injected service, or build one from configuration."""
+        if self.explanation_service is not None:
+            return self.explanation_service
+
+        if self.explanation_service_factory is not None:
+            return self.explanation_service_factory()
+
+        from pc_security.ai.explanation_service import AIExplanationService
+
+        return AIExplanationService()
 
     @staticmethod
     def _pid_sort_key(analysis):
@@ -145,10 +159,7 @@ class ProcessScanService:
             report("Scan complete. No processes were available for review.")
             return result
 
-        if self.explanation_service is None:
-            from pc_security.ai.explanation_service import AIExplanationService
-
-            self.explanation_service = AIExplanationService()
+        explanation_service = self._get_explanation_service()
 
         total = len(selected)
 
@@ -167,7 +178,7 @@ class ProcessScanService:
             report(f"AI explanation {index} of {total}: PID {pid}...")
 
             try:
-                explanation = self.explanation_service.explain_process(
+                explanation = explanation_service.explain_process(
                     analysis
                 )
                 result["ai_explanations"].append(explanation)
