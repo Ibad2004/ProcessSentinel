@@ -130,3 +130,39 @@ def test_main_passes_configured_ai_settings(monkeypatch):
     service = scan_service.explanation_service_factory()
     assert service.client.max_tokens == 2000
 
+
+def test_scan_history_is_wired_with_configured_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        main_module, "get_history_path", lambda: tmp_path / "history.db"
+    )
+
+    history = main_module.build_scan_history({"max_scans": 7})
+    fallback = main_module.build_scan_history({"max_scans": "lots"})
+    default = main_module.build_scan_history(None)
+
+    assert history.max_scans == 7
+    assert history.path == tmp_path / "history.db"
+    assert fallback.max_scans == 50
+    assert default.max_scans == 50
+    assert not (tmp_path / "history.db").exists()  # opened lazily
+
+
+def test_main_shares_ai_config_and_history(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module, "QApplication", FakeApplication)
+    monkeypatch.setattr(main_module, "MainWindow", FakeMainWindow)
+    monkeypatch.setattr(
+        main_module, "get_history_path", lambda: tmp_path / "h.db"
+    )
+    config = {"ai": {"model": "m1"}, "history": {"max_scans": 3}}
+    monkeypatch.setattr(main_module, "load_config", lambda: config)
+
+    main_module.main()
+    kwargs = FakeMainWindow.last_instance.kwargs
+
+    assert kwargs["ai_config"] is config["ai"]
+    assert kwargs["scan_service"].history.max_scans == 3
+
+    # A model saved in AI settings updates this dict; the factory follows.
+    config["ai"]["model"] = "m2"
+    service = kwargs["scan_service"].explanation_service_factory()
+    assert service.client.model == "m2"

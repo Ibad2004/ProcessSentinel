@@ -16,3 +16,6 @@ htmlcov/
 
 # Logs
 logs/*.log
+# Local scan history (contains this computer's process list)
+data/history.db
+data/history.db-journal

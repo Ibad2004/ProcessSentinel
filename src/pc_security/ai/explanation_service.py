@@ -69,6 +69,10 @@ Additional rules:
   (such as PowerShell or cmd) had outbound connections.
 - Rule UNSIGNED_WITH_NETWORK_ACTIVITY means a program without a digital
   signature had outbound connections.
+- is_new_since_last_scan is true when this program file was not running in
+  ProcessSentinel's previous saved scan. New programs start all the time
+  (updates, apps you opened); being new does not mean malicious. It only
+  suggests the user may want to confirm they recognise it.
 - If evidence is insufficient, state that explicitly.
 """
 
@@ -102,6 +106,7 @@ class AIExplanationService:
                 "outbound_connection_count"
             ),
             "listening_ports": analysis.get("listening_ports"),
+            "is_new_since_last_scan": analysis.get("is_new_since_last_scan"),
             "findings": [],
         }
 

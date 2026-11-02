@@ -322,3 +322,100 @@ def test_default_pipeline_uses_network_scanner():
     from pc_security.scanner.network_scanner import collect_connections
 
     assert ProcessScanService().network_scanner is collect_connections
+
+
+class FakeHistory:
+    def __init__(self, new_pids=(), error=None):
+        self.new_pids = set(new_pids)
+        self.error = error
+        self.recorded = []
+
+    def record_scan(self, analyses, scanned_count=None):
+        if self.error is not None:
+            raise self.error
+        for item in analyses:
+            item["is_new_since_last_scan"] = item["pid"] in self.new_pids
+        self.recorded.append((list(analyses), scanned_count))
+        return 7
+
+
+def test_history_is_saved_before_ai_and_marks_new():
+    seen_by_ai = []
+
+    class RecordingAI:
+        def explain_process(self, analysis):
+            seen_by_ai.append(analysis["is_new_since_last_scan"])
+            return {"pid": analysis["pid"], "explanation": "ok"}
+
+    history = FakeHistory(new_pids={102})
+    messages = []
+    service = ProcessScanService(
+        scanner=lambda: [
+            sample_process(101, "old.exe"), sample_process(102, "new.exe"),
+        ],
+        analyzer=lambda items: [sample_analysis(i, 35) for i in items],
+        explanation_service=RecordingAI(),
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+        history=history,
+    )
+
+    result = service.run_scan(include_ai=True, progress_callback=messages.append)
+
+    assert history.recorded[0][1] == 2
+    assert result["history_scan_id"] == 7
+    assert result["history_error"] is None
+    assert {a["pid"]: a["is_new_since_last_scan"] for a in result["analyses"]} == {
+        101: False, 102: True,
+    }
+    assert sorted(seen_by_ai) == [False, True]
+    assert "Saving scan history..." in messages
+
+
+def test_history_failure_does_not_stop_scan():
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "example.exe")],
+        analyzer=lambda items: [sample_analysis(items[0])],
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+        history=FakeHistory(error=RuntimeError("database is locked")),
+    )
+
+    result = service.run_scan()
+
+    assert result["scanned_count"] == 1
+    assert "locked" in result["history_error"]
+    assert result["analyses"][0]["is_new_since_last_scan"] is False
+
+
+def test_without_history_nothing_is_new():
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "example.exe")],
+        analyzer=lambda items: [sample_analysis(items[0])],
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+    )
+
+    result = service.run_scan()
+
+    assert result["history_scan_id"] is None
+    assert result["history_error"] is None
+    assert result["analyses"][0]["is_new_since_last_scan"] is False
+
+
+def test_real_history_store_in_pipeline(tmp_path):
+    from pc_security.core.history import ScanHistory
+
+    history = ScanHistory(tmp_path / "data" / "history.db")
+    service = ProcessScanService(
+        scanner=lambda: [sample_process(101, "example.exe")],
+        analyzer=lambda items: [sample_analysis(items[0])],
+        file_inspector=lambda items: None,
+        network_scanner=lambda: {"connections": [], "notes": []},
+        history=history,
+    )
+
+    service.run_scan()
+    service.run_scan()
+
+    assert len(history.list_scans()) == 2

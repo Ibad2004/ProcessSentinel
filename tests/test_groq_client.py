@@ -72,3 +72,38 @@ def test_generate_rejects_empty_response():
     ):
         with pytest.raises(GroqClientError, match="choices"):
             client.generate("Explain this process")
+
+
+def test_check_connection_sends_tiny_request():
+    payload = {"choices": [{"message": {"content": ""}}]}
+    client = GroqClient(api_key="test-key", model="m")
+
+    with patch(
+        "pc_security.ai.groq_client.urlopen",
+        return_value=FakeResponse(payload),
+    ) as mocked_urlopen:
+        assert client.check_connection() is True
+
+    body = json.loads(mocked_urlopen.call_args.args[0].data.decode("utf-8"))
+    assert body["model"] == "m"
+    assert body["max_completion_tokens"] <= 64
+    assert len(body["messages"]) == 1
+
+
+def test_check_connection_requires_key():
+    client = GroqClient(api_key="")
+
+    with patch.dict("os.environ", {"GROQ_API_KEY": ""}):
+        with pytest.raises(GroqClientError, match="GROQ_API_KEY"):
+            client.check_connection()
+
+
+def test_check_connection_reports_bad_response():
+    client = GroqClient(api_key="test-key")
+
+    with patch(
+        "pc_security.ai.groq_client.urlopen",
+        return_value=FakeResponse({"error": "nope"}),
+    ):
+        with pytest.raises(GroqClientError, match="choices"):
+            client.check_connection()

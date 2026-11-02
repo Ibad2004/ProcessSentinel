@@ -132,3 +132,16 @@ def test_network_summary_is_sent_but_not_endpoints():
     assert "203.0.113.9" not in client.prompt
     assert "SCRIPT_HOST_WITH_NETWORK_ACTIVITY" in client.system_prompt
     assert "UNSIGNED_WITH_NETWORK_ACTIVITY" in client.system_prompt
+
+
+def test_new_since_last_scan_is_sent_and_explained():
+    client = FakeAIClient()
+    service = AIExplanationService(client=client)
+
+    analysis = sample_analysis()
+    analysis["is_new_since_last_scan"] = True
+
+    service.explain_process(analysis)
+
+    assert '"is_new_since_last_scan": true' in client.prompt
+    assert "does not mean malicious" in client.system_prompt

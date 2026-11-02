@@ -17,3 +17,7 @@ ai:
   model: "openai/gpt-oss-20b"
   timeout: 30
   max_tokens: 2000
+
+history:
+  # Number of saved scans to keep in data/history.db; older ones are removed.
+  max_scans: 50

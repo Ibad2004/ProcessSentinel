@@ -7,7 +7,8 @@ from dotenv import load_dotenv
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pc_security.core.config import load_config
-from pc_security.core.paths import get_app_directory
+from pc_security.core.history import DEFAULT_MAX_SCANS, ScanHistory
+from pc_security.core.paths import get_app_directory, get_history_path
 from pc_security.core.scan_service import ProcessScanService
 from pc_security.ui.main_window import MainWindow
 
@@ -31,6 +32,15 @@ def build_explanation_service_factory(ai_config):
         return AIExplanationService(client=client)
 
     return factory
+
+
+def build_scan_history(history_config):
+    """Create the scan history store (the database opens lazily)."""
+    max_scans = (history_config or {}).get("max_scans", DEFAULT_MAX_SCANS)
+    try:
+        return ScanHistory(get_history_path(), max_scans=max_scans)
+    except ValueError:
+        return ScanHistory(get_history_path())
 
 
 def main() -> int:
@@ -69,6 +79,7 @@ def main() -> int:
 
     scan_service = ProcessScanService(
         explanation_service_factory=explanation_service_factory,
+        history=build_scan_history(config.get("history")),
     )
 
     window = MainWindow(
@@ -78,6 +89,7 @@ def main() -> int:
         ai_timeout=ai_config.get("timeout", 30),
         ai_max_tokens=ai_config.get("max_tokens", 2000),
         explanation_service_factory=explanation_service_factory,
+        ai_config=ai_config,
     )
 
     window.show()

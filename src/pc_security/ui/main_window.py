@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from PySide6.QtCore import QThread, QUrl, Signal, Slot, Qt
-from PySide6.QtGui import QBrush, QColor, QDesktopServices
+from PySide6.QtCore import QUrl, Slot, Qt
+from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
@@ -20,6 +23,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -28,25 +32,28 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from pc_security.core.platform_info import is_running_as_admin
+from pc_security.ui.admin_banner import AdminBanner
+from pc_security.ui.common import (
+    FLAGGED_ROW_BRUSH,
+    NEW_ROW_BRUSH,
+    NEW_TOOLTIP,
+    NumericTableWidgetItem,
+    risk_level_color,
+    signature_color,
+    signature_label,
+)
+from pc_security.ui.history_tab import HistoryTab
+from pc_security.ui.process_tree import ProcessTreeWidget
+from pc_security.ui.report_export import build_html_report, save_html_report
+from pc_security.ui.workers import TaskWorker
 
-SIGNATURE_LABELS = {
-    "valid": "Valid",
-    "unsigned": "Unsigned",
-    "invalid": "Invalid",
-    "unknown": "Unknown",
-}
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
 MAX_DETAIL_ENDPOINTS = 10
 
-# Translucent amber reads well on both the dark and light themes.
-FLAGGED_ROW_BRUSH = QBrush(QColor(251, 191, 36, 60))
-
-
-def signature_label(status) -> str:
-    """Return a readable label for a signature status."""
-    return SIGNATURE_LABELS.get(status, "Not checked")
+NEW_ROLE = Qt.ItemDataRole.UserRole + 1
 
 
 def virustotal_url(sha256) -> str | None:
@@ -57,35 +64,6 @@ def virustotal_url(sha256) -> str | None:
     if not isinstance(sha256, str) or not _SHA256_PATTERN.match(sha256):
         return None
     return f"https://www.virustotal.com/gui/file/{sha256.lower()}"
-
-
-class NumericTableWidgetItem(QTableWidgetItem):
-    """Sort numeric values numerically rather than alphabetically."""
-
-    def __lt__(self, other):
-        try:
-            return float(self.text()) < float(other.text())
-        except (ValueError, TypeError):
-            return super().__lt__(other)
-
-
-class TaskWorker(QThread):
-    """Run scanning and AI requests without freezing the UI."""
-
-    succeeded = Signal(object)
-    failed = Signal(str)
-    progress = Signal(str)
-
-    def __init__(self, operation: Callable, parent=None):
-        super().__init__(parent)
-        self.operation = operation
-
-    def run(self) -> None:
-        try:
-            result = self.operation(self.progress.emit)
-            self.succeeded.emit(result)
-        except Exception as exc:
-            self.failed.emit(str(exc))
 
 
 class MainWindow(QMainWindow):
@@ -100,6 +78,11 @@ class MainWindow(QMainWindow):
         ai_max_tokens: int = 2000,
         explanation_service_factory=None,
         startup_scanner=None,
+        ai_config=None,
+        admin_check=None,
+        env_path=None,
+        config_path=None,
+        settings_client_factory=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -111,6 +94,18 @@ class MainWindow(QMainWindow):
         self.ai_max_tokens = ai_max_tokens
         self.explanation_service_factory = explanation_service_factory
         self.startup_scanner = startup_scanner
+        # The same dict main.py's explanation factory reads, so a model
+        # saved in AI settings applies to the next request.
+        self.ai_config = ai_config
+        self.env_path = env_path
+        self.config_path = config_path
+        self.settings_client_factory = settings_client_factory
+        self.history = getattr(scan_service, "history", None)
+
+        try:
+            self.is_admin = (admin_check or is_running_as_admin)()
+        except Exception:
+            self.is_admin = None
 
         self.worker = None
         self.current_theme = "dark"
@@ -122,6 +117,7 @@ class MainWindow(QMainWindow):
         self.ai_selection_mode = "not_requested"
         self.network_connections: list[dict[str, Any]] = []
         self.startup_entries: list[dict[str, Any]] = []
+        self.last_scanned_count = 0
 
         self.setWindowTitle("ProcessSentinel")
         self.resize(1500, 900)
@@ -156,6 +152,11 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(14)
 
+        self.admin_banner = AdminBanner()
+        layout.addWidget(self.admin_banner)
+        # Only an explicit "not admin" shows the banner; never elevate.
+        self.admin_banner.setVisible(self.is_admin is False)
+
         header = QHBoxLayout()
 
         brand_icon = QLabel("◈")
@@ -184,6 +185,14 @@ class MainWindow(QMainWindow):
             "Switch between dark and light appearance."
         )
         header.addWidget(self.theme_button)
+
+        self.settings_button = QPushButton("⚙  AI settings")
+        self.settings_button.setObjectName("themeButton")
+        self.settings_button.setToolTip(
+            "Set the Groq API key and AI model."
+        )
+        self.settings_button.clicked.connect(self._open_ai_settings)
+        header.addWidget(self.settings_button)
 
         # Keep compatibility with existing scan-state logic, but hide it.
         self.connection_label = QLabel("LOCAL SCANNER")
@@ -221,6 +230,14 @@ class MainWindow(QMainWindow):
         )
         self.ai_scan_button.clicked.connect(self._start_ai_scan)
         intro.addWidget(self.ai_scan_button)
+
+        self.export_button = QPushButton("⇩  Export report")
+        self.export_button.setObjectName("secondaryButton")
+        self.export_button.setToolTip(
+            "Save this scan as an HTML report (user names are masked)."
+        )
+        self.export_button.clicked.connect(self._export_report)
+        intro.addWidget(self.export_button)
 
         layout.addLayout(intro)
 
@@ -273,6 +290,20 @@ class MainWindow(QMainWindow):
         self.result_count.setObjectName("muted")
         explorer_header.addWidget(self.result_count)
         explorer_header.addStretch()
+
+        self.tree_view_button = QPushButton("⧉  Tree view")
+        self.tree_view_button.setObjectName("secondaryButton")
+        self.tree_view_button.setCheckable(True)
+        self.tree_view_button.setToolTip(
+            "Switch between a flat list and a parent/child process tree."
+        )
+        self.tree_view_button.toggled.connect(self._set_tree_view)
+        explorer_header.addWidget(self.tree_view_button)
+
+        self.only_new_checkbox = QCheckBox("Show only new")
+        self.only_new_checkbox.setToolTip(NEW_TOOLTIP)
+        self.only_new_checkbox.toggled.connect(self._filter_processes)
+        explorer_header.addWidget(self.only_new_checkbox)
 
         self.search_input = QLineEdit()
         self.search_input.setObjectName("searchInput")
@@ -329,7 +360,15 @@ class MainWindow(QMainWindow):
         self.process_table.itemSelectionChanged.connect(
             self._show_selected_process
         )
-        table_layout.addWidget(self.process_table)
+        self.process_tree = ProcessTreeWidget()
+        self.process_tree.itemSelectionChanged.connect(
+            self._show_selected_process
+        )
+
+        self.process_view_stack = QStackedWidget()
+        self.process_view_stack.addWidget(self.process_table)
+        self.process_view_stack.addWidget(self.process_tree)
+        table_layout.addWidget(self.process_view_stack)
         splitter.addWidget(table_frame)
 
         detail_frame = QFrame()
@@ -541,6 +580,12 @@ class MainWindow(QMainWindow):
 
         self._build_network_tab()
         self._build_startup_tab()
+
+        # ============================================================
+        # WORKSPACE 5: SCAN HISTORY
+        # ============================================================
+        self.history_tab = HistoryTab(self.history)
+        self.workspace_tabs.addTab(self.history_tab, "History")
 
     @staticmethod
     def _make_table(object_name, headers, stretch_column):
@@ -798,15 +843,21 @@ class MainWindow(QMainWindow):
             border-radius: 8px; padding: 10px 12px; selection-background-color: #2563EB;
         }
         QTableWidget#processTable, QTableWidget#aiCandidateTable,
-        QTableWidget#networkTable, QTableWidget#startupTable {
+        QTableWidget#networkTable, QTableWidget#startupTable,
+        QTableWidget#historyTable, QTreeWidget#processTree {
             background: #111B2E; alternate-background-color: #131F33;
             color: #DCE5F2; border: none; selection-background-color: #1D3A65;
             selection-color: white; outline: none;
         }
         QTableWidget#processTable::item, QTableWidget#aiCandidateTable::item,
-        QTableWidget#networkTable::item, QTableWidget#startupTable::item {
+        QTableWidget#networkTable::item, QTableWidget#startupTable::item,
+        QTableWidget#historyTable::item, QTreeWidget#processTree::item {
             padding: 7px; border-bottom: 1px solid #202D43;
         }
+        QFrame#adminBanner {
+            background: #3B2A0B; border: 1px solid #B45309; border-radius: 10px;
+        }
+        QLabel#adminBannerText { color: #FDE68A; font-weight: 600; }
         QHeaderView::section {
             background: #172238; color: #91A4C1; border: none;
             border-bottom: 1px solid #2B3A53; padding: 10px 7px;
@@ -870,15 +921,21 @@ class MainWindow(QMainWindow):
             border-radius: 8px; padding: 10px 12px; selection-background-color: #2563EB;
         }
         QTableWidget#processTable, QTableWidget#aiCandidateTable,
-        QTableWidget#networkTable, QTableWidget#startupTable {
+        QTableWidget#networkTable, QTableWidget#startupTable,
+        QTableWidget#historyTable, QTreeWidget#processTree {
             background: white; alternate-background-color: #F6F8FC; color: #243247;
             border: none; selection-background-color: #C9DDFB; selection-color: #111827;
             outline: none;
         }
         QTableWidget#processTable::item, QTableWidget#aiCandidateTable::item,
-        QTableWidget#networkTable::item, QTableWidget#startupTable::item {
+        QTableWidget#networkTable::item, QTableWidget#startupTable::item,
+        QTableWidget#historyTable::item, QTreeWidget#processTree::item {
             padding: 7px; border-bottom: 1px solid #E2E8F0;
         }
+        QFrame#adminBanner {
+            background: #FEF3C7; border: 1px solid #F59E0B; border-radius: 10px;
+        }
+        QLabel#adminBannerText { color: #78350F; font-weight: 600; }
         QHeaderView::section {
             background: #EDF2F8; color: #64748B; border: none;
             border-bottom: 1px solid #CBD5E1; padding: 10px 7px;
@@ -922,6 +979,7 @@ class MainWindow(QMainWindow):
         self.ai_scan_button.setEnabled(not busy)
         self.retry_button.setEnabled(not busy)
         self.startup_scan_button.setEnabled(not busy)
+        self.export_button.setEnabled(not busy and bool(self.analyses))
 
         if busy:
             self.progress_bar.setRange(0, 0)
@@ -1025,9 +1083,22 @@ class MainWindow(QMainWindow):
         self.flagged_value.setText(str(flagged))
         self.explained_value.setText(str(len(self.ai_explanations)))
         self.failures_value.setText(str(len(self.ai_errors)))
-        self.status_label.setText(
-            f"Scan completed. {scanned} processes scanned."
+        self.last_scanned_count = scanned
+        new_count = sum(
+            1 for item in self.analyses if item.get("is_new_since_last_scan")
         )
+        status = f"Scan completed. {scanned} processes scanned."
+        if new_count:
+            status += f" {new_count} new since the last scan."
+        if result.get("history_error"):
+            # Non-blocking: the scan itself is complete and usable.
+            status += (
+                " Warning: scan history could not be saved "
+                f"({result['history_error']})."
+            )
+        self.status_label.setText(status)
+        self.export_button.setEnabled(bool(self.analyses))
+        self.history_tab.refresh()
 
         if flagged == 0:
             self.details_text.setPlainText(
@@ -1207,34 +1278,41 @@ class MainWindow(QMainWindow):
             signature_item = QTableWidgetItem(
                 signature_label(signature_status)
             )
-            if signature_status == "invalid":
-                signature_item.setForeground(Qt.GlobalColor.red)
-            elif signature_status == "unsigned":
-                signature_item.setForeground(Qt.GlobalColor.yellow)
+            color = signature_color(signature_status)
+            if color is not None:
+                signature_item.setForeground(color)
             path_item = QTableWidgetItem(
                 str(analysis.get("exe_path") or "Unavailable")
             )
+            level_item.setForeground(risk_level_color(level))
 
-            if level == "HIGH":
-                level_item.setForeground(Qt.GlobalColor.red)
-            elif level == "MEDIUM":
-                level_item.setForeground(Qt.GlobalColor.yellow)
-            else:
-                level_item.setForeground(Qt.GlobalColor.green)
+            row_items = [
+                pid_item, name_item, score_item, level_item,
+                signature_item, path_item,
+            ]
+            is_new = bool(analysis.get("is_new_since_last_scan"))
+            pid_item.setData(NEW_ROLE, is_new)
+            if is_new:
+                font = QFont(name_item.font())
+                font.setBold(True)
+                name_item.setFont(font)
+                for item in row_items:
+                    item.setBackground(NEW_ROW_BRUSH)
+                    item.setToolTip(NEW_TOOLTIP)
 
-            for column, item in enumerate(
-                [
-                    pid_item, name_item, score_item, level_item,
-                    signature_item, path_item,
-                ]
-            ):
+            for column, item in enumerate(row_items):
                 self.process_table.setItem(row, column, item)
 
         self.process_table.setSortingEnabled(True)
-        self._filter_processes(self.search_input.text())
+        self.process_tree.populate(self.analyses)
+        self._filter_processes()
 
         if self.process_table.rowCount():
             self.process_table.selectRow(0)
+            first = self._table_pid(0)
+            if first is not None:
+                self.process_tree.select_pid(first)
+            self._show_selected_process()
         else:
             self.selected_process_label.setText("No processes found")
             self.selected_pid_label.setText(
@@ -1242,9 +1320,10 @@ class MainWindow(QMainWindow):
             )
             self.details_text.clear()
 
-    @Slot(str)
-    def _filter_processes(self, query: str) -> None:
-        query = query.strip().casefold()
+    def _filter_processes(self, *_args) -> None:
+        """Apply search text and "Show only new" to the table and tree."""
+        query = self.search_input.text().strip().casefold()
+        only_new = self.only_new_checkbox.isChecked()
         visible = 0
 
         for row in range(self.process_table.rowCount()):
@@ -1255,30 +1334,70 @@ class MainWindow(QMainWindow):
                 for column in range(self.process_table.columnCount())
             ).casefold()
 
-            hidden = query not in searchable
+            pid_item = self.process_table.item(row, 0)
+            is_new = bool(pid_item.data(NEW_ROLE)) if pid_item else False
+            hidden = query not in searchable or (only_new and not is_new)
             self.process_table.setRowHidden(row, hidden)
             if not hidden:
                 visible += 1
 
+        self.process_tree.apply_filter(query, only_new)
+
+        total = self.process_table.rowCount()
         self.result_count.setText(
-            f"{visible} of {self.process_table.rowCount()} processes"
-            if query
-            else f"{self.process_table.rowCount()} processes"
+            f"{visible} of {total} processes"
+            if visible != total
+            else f"{total} processes"
         )
 
-    def _selected_pid(self) -> int | None:
-        row = self.process_table.currentRow()
-        if row < 0 or self.process_table.isRowHidden(row):
-            return None
-
+    def _table_pid(self, row: int) -> int | None:
         item = self.process_table.item(row, 0)
         if item is None:
             return None
-
         try:
             return int(item.text())
         except ValueError:
             return None
+
+    def _tree_view_active(self) -> bool:
+        return self.process_view_stack.currentWidget() is self.process_tree
+
+    def _selected_pid(self) -> int | None:
+        if self._tree_view_active():
+            return self.process_tree.selected_pid()
+
+        row = self.process_table.currentRow()
+        if row < 0 or self.process_table.isRowHidden(row):
+            return None
+        return self._table_pid(row)
+
+    def _select_pid(self, pid: int) -> bool:
+        """Select a process in both views, clearing filters that hide it."""
+        for row in range(self.process_table.rowCount()):
+            if self._table_pid(row) != pid:
+                continue
+
+            if self.process_table.isRowHidden(row):
+                self.only_new_checkbox.setChecked(False)
+                self.search_input.clear()
+
+            self.process_table.selectRow(row)
+            self.process_tree.select_pid(pid)
+            self._show_selected_process()
+            return True
+        return False
+
+    @Slot(bool)
+    def _set_tree_view(self, enabled: bool) -> None:
+        pid = self._selected_pid()
+        self.process_view_stack.setCurrentWidget(
+            self.process_tree if enabled else self.process_table
+        )
+        self.tree_view_button.setText(
+            "▤  Table view" if enabled else "⧉  Tree view"
+        )
+        if pid is not None:
+            self._select_pid(pid)
 
     @Slot()
     def _show_selected_process(self) -> None:
@@ -1312,6 +1431,8 @@ class MainWindow(QMainWindow):
             f"Executable path: {path}",
             f"Risk score: {score}",
             f"Risk level: {level}",
+            "New since last scan: "
+            + ("Yes" if analysis.get("is_new_since_last_scan") else "No"),
             "",
             "FILE IDENTITY",
             "=" * 32,
@@ -1493,16 +1614,12 @@ class MainWindow(QMainWindow):
         if pid_item is None:
             return False
 
-        for table_row in range(self.process_table.rowCount()):
-            item = self.process_table.item(table_row, 0)
-            if item is None or item.text() != pid_item.text():
-                continue
+        try:
+            pid = int(pid_item.text())
+        except ValueError:
+            pid = None
 
-            if self.process_table.isRowHidden(table_row):
-                self.search_input.clear()
-
-            self.process_table.selectRow(table_row)
-            self._show_selected_process()
+        if pid is not None and self._select_pid(pid):
             self.workspace_tabs.setCurrentWidget(self.dashboard_page)
             return True
 
@@ -1678,6 +1795,78 @@ class MainWindow(QMainWindow):
             lines.extend(f"- {note}" for note in notes)
 
         self.startup_details_text.setPlainText("\n".join(lines))
+
+    # ------------------------------------------------------------------
+    # Export report
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _export_report(self) -> None:
+        if not self.analyses:
+            return
+
+        default_name = (
+            f"ProcessSentinel-report-{datetime.now():%Y%m%d-%H%M}.html"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export report",
+            str(Path.home() / default_name),
+            "HTML files (*.html)",
+        )
+        if not path:
+            return
+
+        report = build_html_report(
+            self.analyses,
+            ai_explanations=self.ai_explanations,
+            scanned_count=self.last_scanned_count,
+            is_admin=self.is_admin,
+        )
+        try:
+            saved = save_html_report(path, report)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Export failed",
+                f"The report could not be saved:\n{exc.strerror or exc}",
+            )
+            return
+        self.status_label.setText(f"Report saved to {saved}")
+
+    # ------------------------------------------------------------------
+    # AI settings
+    # ------------------------------------------------------------------
+
+    def _create_settings_dialog(self):
+        from pc_security.core.paths import get_env_path
+        from pc_security.core.settings_store import get_writable_config_path
+        from pc_security.ui.settings_dialog import AISettingsDialog
+
+        dialog = AISettingsDialog(
+            env_path=self.env_path or get_env_path(),
+            config_path=self.config_path or get_writable_config_path(),
+            current_model=self.ai_model,
+            timeout=self.ai_timeout,
+            client_factory=self.settings_client_factory,
+            parent=self,
+        )
+        dialog.settings_saved.connect(self._apply_ai_settings)
+        return dialog
+
+    @Slot()
+    def _open_ai_settings(self) -> None:
+        self._create_settings_dialog().exec()
+
+    @Slot(str)
+    def _apply_ai_settings(self, model: str) -> None:
+        """Use the saved key/model for the next AI request; no restart."""
+        self.ai_model = model
+        if self.ai_config is not None:
+            self.ai_config["model"] = model
+        self.footer_ai_label.setText(f"AI model: {model}")
+        self.status_label.setText(
+            "AI settings saved. They apply to the next AI request."
+        )
 
     @Slot()
     def _open_virustotal(self) -> None:

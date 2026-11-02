@@ -62,6 +62,62 @@ class GroqClient:
             "stream": False,
         }
 
+        response_data = self._send(payload)
+
+        choices = response_data.get("choices")
+
+        if not isinstance(choices, list) or not choices:
+            raise GroqClientError(
+                "Groq response did not contain any choices."
+            )
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            raise GroqClientError(
+                "Groq returned an invalid choice format."
+            )
+
+        message = first_choice.get("message", {})
+        if not isinstance(message, dict):
+            raise GroqClientError(
+                "Groq returned an invalid message format."
+            )
+
+        content = message.get("content")
+
+        if not isinstance(content, str) or not content.strip():
+            raise GroqClientError(
+                "Groq returned an empty explanation."
+            )
+
+        return content.strip()
+
+    def check_connection(self):
+        """Send one tiny request to confirm the key and model work.
+
+        Success means Groq accepted the request; the reply text itself is
+        not needed (reasoning models may use the small budget thinking).
+        """
+        if not self.api_key:
+            raise GroqClientError(
+                "GROQ_API_KEY is not set. Check your .env file."
+            )
+
+        response_data = self._send({
+            "model": self.model,
+            "messages": [{"role": "user", "content": "Reply with OK."}],
+            "max_completion_tokens": 32,
+            "stream": False,
+        })
+
+        if not isinstance(response_data.get("choices"), list):
+            raise GroqClientError(
+                "Groq response did not contain any choices."
+            )
+        return True
+
+    def _send(self, payload):
+        """POST a chat-completions payload and return the decoded JSON."""
         request = Request(
             self.API_URL,
             data=json.dumps(payload).encode("utf-8"),
@@ -144,30 +200,4 @@ class GroqClient:
                 "Groq returned an unexpected response format."
             )
 
-        choices = response_data.get("choices")
-
-        if not isinstance(choices, list) or not choices:
-            raise GroqClientError(
-                "Groq response did not contain any choices."
-            )
-
-        first_choice = choices[0]
-        if not isinstance(first_choice, dict):
-            raise GroqClientError(
-                "Groq returned an invalid choice format."
-            )
-
-        message = first_choice.get("message", {})
-        if not isinstance(message, dict):
-            raise GroqClientError(
-                "Groq returned an invalid message format."
-            )
-
-        content = message.get("content")
-
-        if not isinstance(content, str) or not content.strip():
-            raise GroqClientError(
-                "Groq returned an empty explanation."
-            )
-
-        return content.strip()
+        return response_data

@@ -22,6 +22,7 @@ class ProcessScanService:
         explanation_service_factory=None,
         file_inspector=None,
         network_scanner=None,
+        history=None,
     ):
         if (
             isinstance(max_ai_explanations, bool)
@@ -34,6 +35,8 @@ class ProcessScanService:
         self.analyzer = analyzer or analyze_processes
         self.file_inspector = file_inspector or inspect_processes
         self.network_scanner = network_scanner or collect_connections
+        # Optional ScanHistory; None disables saving (and "new" marking).
+        self.history = history
         self.explanation_service = explanation_service
         self.explanation_service_factory = explanation_service_factory
         self.max_ai_explanations = max_ai_explanations
@@ -149,6 +152,24 @@ class ProcessScanService:
         report("Applying rule-based security analysis...")
         analyses = self.analyzer(processes)
 
+        history_error = None
+        history_scan_id = None
+        for analysis in analyses:
+            analysis["is_new_since_last_scan"] = False
+
+        if self.history is not None:
+            report("Saving scan history...")
+            try:
+                history_scan_id = self.history.record_scan(
+                    analyses, scanned_count=len(processes)
+                )
+            except Exception as exc:
+                # History is a convenience; a locked or broken database
+                # must never stop the scan.
+                history_error = str(exc)
+                for analysis in analyses:
+                    analysis["is_new_since_last_scan"] = False
+
         result = {
             "scanned_count": len(processes),
             "analyses": analyses,
@@ -163,6 +184,8 @@ class ProcessScanService:
             "network_connections": network.get("connections", []),
             "network_notes": network.get("notes", []),
             "network_error": network_error,
+            "history_scan_id": history_scan_id,
+            "history_error": history_error,
         }
 
         if not include_ai:
